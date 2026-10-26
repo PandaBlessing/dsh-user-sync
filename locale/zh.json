@@ -1,0 +1,14 @@
+{
+  "meta": {
+    "title": "设置同步",
+    "description": "把技能、插件清单、配置与记忆在设备间对齐。"
+  },
+  "nav": "设置同步",
+  "empty": "四类用户级资产（技能 / 插件清单 / 配置 / 用户记忆）可在设备间同步。",
+  "status": {
+    "title": "状态",
+    "dshHome": "DSH 主目录",
+    "profile": "Profile",
+    "resolvedBy": "路径来源"
+  }
+}
