@@ -1,0 +1,66 @@
+{
+  "name": "@pandablessing/dsh-user-sync",
+  "version": "1.0.25",
+  "description": "DSH用户级配置同步插件，更新需重启DSH",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "locale"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:server": "tsc -p server/tsconfig.json",
+    "test": "node --test test/*.test.js",
+    "publish:npm": "node scripts/publish.mjs",
+    "publish:dry": "node scripts/publish.mjs --dry-run",
+    "smoke:npm": "node scripts/verify-npm-install.mjs"
+  },
+  "license": "MulanPSL-2.0",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "sync",
+    "profile"
+  ],
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "author": "gray-panda",
+  "repository": {
+    "type": "git",
+    "url": "git@gitee.com:gray-panda/dsh-user-sync.git"
+  },
+  "homepage": "https://gitee.com/gray-panda/dsh-user-sync",
+  "bugs": {
+    "url": "https://gitee.com/gray-panda/dsh-user-sync/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
