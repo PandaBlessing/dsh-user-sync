@@ -1,0 +1,3 @@
+# fixture 必须保持字节级原样：禁止 git 的换行符转换。
+# fx-crlf 依赖真实的 CRLF 字节；一旦被 autocrlf/`text` 规则改写，用例 HASH-01 就失去意义。
+* -text
