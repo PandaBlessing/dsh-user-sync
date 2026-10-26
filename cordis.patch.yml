@@ -1,0 +1,5 @@
+# dsh-user-sync 的组合包层：把插件挂进 profile。
+# 用户层的 cordis.patch.yml 可覆盖此条目的 config（设置面板写入的位置）。
+- insert:
+    - id: user-sync
+      name: "@pandablessing/dsh-user-sync"
