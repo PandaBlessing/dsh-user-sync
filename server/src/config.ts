@@ -1,0 +1,56 @@
+import { readFileSync, existsSync } from 'node:fs';
+
+export interface WebdavConfig {
+  /** 服务地址；兼容两种写法：`baseUrl`（坚果云托管的 secrets.json）与 `url`。 */
+  baseUrl?: string;
+  url?: string;
+  username: string;
+  password: string;
+  root?: string;
+}
+
+export interface ServerConfig {
+  port: number;
+  dataDir: string;
+  webdav: WebdavConfig | null;
+  quotaPackageBytes: number;
+  quotaTotalBytes: number;
+  /** 运营方监控接口密钥（secrets.json 的 adminKey；未配置时该接口关闭）。 */
+  adminKey: string | null;
+  logDir: string;
+}
+
+interface Secrets {
+  port?: number;
+  dataDir?: string;
+  webdav?: WebdavConfig;
+  quotaPackageBytes?: number;
+  quotaTotalBytes?: number;
+  adminKey?: string;
+  [key: string]: unknown;
+}
+
+/** 读取配置：secrets.json 优先，其次环境变量。 */
+export function loadConfig(baseDir: string): ServerConfig {
+  const secretsPath = process.env.DSH_SYNC_SECRETS || `${baseDir}/secrets.json`;
+  let secrets: Secrets = {};
+  if (existsSync(secretsPath)) {
+    try {
+      secrets = JSON.parse(readFileSync(secretsPath, 'utf8'));
+    } catch (error) {
+      throw new Error(`secrets.json 解析失败: ${(error as Error).message}`);
+    }
+  }
+  const webdav = secrets.webdav;
+  const webdavUrl = webdav?.baseUrl ?? webdav?.url;
+  return {
+    port: Number(process.env.DSH_SYNC_PORT || secrets.port || 10001),
+    dataDir: process.env.DSH_SYNC_DATA || secrets.dataDir || `${baseDir}/data`,
+    // 凭据不完整时视为未配置，回退本地磁盘（避免服务起不来）
+    webdav: webdav?.username && webdav?.password && webdavUrl ? { ...webdav, baseUrl: webdavUrl } : null,
+    quotaPackageBytes: Number(secrets.quotaPackageBytes || 10 * 1024 * 1024),
+    quotaTotalBytes: Number(secrets.quotaTotalBytes || 50 * 1024 * 1024),
+    adminKey: typeof secrets.adminKey === 'string' && secrets.adminKey.trim() ? secrets.adminKey.trim() : null,
+    logDir: `${baseDir}/logs`,
+  };
+}
