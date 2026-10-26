@@ -1,0 +1,22 @@
+# 依赖与构建中间产物
+node_modules/
+pnpm-lock.yaml
+*.tsbuildinfo
+
+# 构建产物按需提交：lib/ 是插件产物（junction 安装后 DSH 直接加载），
+# server/dist/ 是部署产物；两者都保留在版本库，不在此忽略。
+
+# 编辑器与系统
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# 运行时文件
+*.log
+
+# 凭据：token 只放本地文件，绝不进版本库
+# .env.local 由 scripts/publish.mjs 读取；模板见 .env.local.example
+.env.local
+.env
+*.local.npmrc
