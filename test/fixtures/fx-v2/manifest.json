@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 2,
+  "hashMode": "lf",
+  "exportedAt": "2026-10-14 12:00:00",
+  "machine": "TEST-PC",
+  "dshHome": "C:\\Users\\test\\.dsh",
+  "profile": "desktop",
+  "bundles": [
+    "@deepseek-ai/dsh-base",
+    "@deepseek-ai/dsh-web-app"
+  ],
+  "dependencies": [],
+  "files": [
+    {
+      "name": "package.json",
+      "sha256": "106a6116f3001c9eee6170881bd8c11e627a73c6a01804535a8c976c27b9e8fe",
+      "size": 268
+    },
+    {
+      "name": "cordis.patch.yml",
+      "sha256": "cd3de57e2ac5ff75de1504b8c622d9545c7ebb6dbb21cd3e55fc39c187a01876",
+      "size": 224
+    }
+  ]
+}
