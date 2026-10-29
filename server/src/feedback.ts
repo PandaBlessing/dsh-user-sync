@@ -92,7 +92,7 @@ export async function submitFeedback(
   storage: ServerStorage,
   input: { type?: unknown; content?: unknown; contact?: unknown; context?: unknown },
   meta: { accountHint?: string; pluginVersion?: string; platform?: string },
-): Promise<{ ok: boolean; id?: string; error?: string }> {
+): Promise<{ ok: boolean; id?: string; error?: string; item?: FeedbackItem }> {
   const type = typeof input.type === 'string' ? input.type : 'other';
   if (!TYPES.has(type)) return { ok: false, error: 'invalid-type' };
   const content = typeof input.content === 'string' ? input.content.trim() : '';
@@ -117,7 +117,7 @@ export async function submitFeedback(
 
   try {
     await storage.put(FEEDBACK_PARTITION, item.id, Buffer.from(JSON.stringify(item, null, 2), 'utf8'));
-    return { ok: true, id: item.id };
+    return { ok: true, id: item.id, item };
   } catch {
     return { ok: false, error: 'storage-error' };
   }

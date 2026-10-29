@@ -9,6 +9,7 @@ import { createStore } from './store.js';
 import { createLocal } from './storage/local.js';
 import { createWebdav } from './storage/webdav.js';
 import { getAdminFile, getAdminPackage, listAdminPackages } from './admin.js';
+import { buildCard, notifyNewFeedback } from './notify.js';
 import { clientIp, deleteFeedback, deleteFeedbackBefore, feedbackStats, getFeedbackFile, hitRateLimit, listFeedback, submitFeedback, updateFeedbackStatus } from './feedback.js';
 
 const PACKAGE_RE = /^dsh-user-sync-\d{8}-\d{4}-[a-z0-9]{6,16}\.tar\.gz$/;
@@ -73,6 +74,32 @@ const server = createServer(async (req, res) => {
       const storageTest = await storage.test();
       return json(res, 200, { ok: true, storage: storage.id, storageTest, webdav: Boolean(config.webdav) });
     }
+    // 飞书卡片回调：按钮直接处理反馈（Verification Token 校验）
+    if (req.method === 'POST' && path === '/feishu/card') {
+      action = 'feishu-card';
+      let payload: Record<string, unknown> = {};
+      try { payload = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { error: 'invalid-json' }); }
+      if (typeof payload.challenge === 'string') return json(res, 200, { challenge: payload.challenge });
+      const header = payload.header as Record<string, unknown> | undefined;
+      const token = typeof payload.token === 'string' ? payload.token : typeof header?.token === 'string' ? (header.token as string) : '';
+      if (!config.feishu?.verificationToken || token !== config.feishu.verificationToken) {
+        return json(res, 403, { error: 'invalid-token' });
+      }
+      const event = payload.event as Record<string, unknown> | undefined;
+      const actionValue = (event?.action as Record<string, unknown> | undefined)?.value as Record<string, unknown> | undefined;
+      const id = typeof actionValue?.id === 'string' ? (actionValue.id as string) : '';
+      const target = typeof actionValue?.action === 'string' ? (actionValue.action as string) : '';
+      if (!id || !['done', 'rejected', 'pending'].includes(target)) return json(res, 400, { error: 'invalid-action' });
+      const result = await updateFeedbackStatus(storage, id, target, '', 'feishu');
+      if (!result.ok || !result.item) return json(res, 400, { toast: { type: 'error', content: '处理失败' } });
+      const label = target === 'done' ? '已标记完成' : target === 'rejected' ? '已拒绝' : '已重新打开';
+      // 卡片 2.0 回调响应：card.data 直接放 2.0 卡片 JSON（不能再包一层 card，否则 200672）
+      return json(res, 200, {
+        toast: { type: 'success', content: label },
+        card: { type: 'raw', data: JSON.parse(buildCard(result.item)) },
+      });
+    }
+
     if (req.method === 'POST' && path === '/v1/feedback') {
       action = 'feedback';
       const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
@@ -85,6 +112,7 @@ const server = createServer(async (req, res) => {
         pluginVersion: typeof input.pluginVersion === 'string' ? input.pluginVersion : '',
         platform: typeof input.platform === 'string' ? input.platform : '',
       });
+      if (result.ok && result.item) void notifyNewFeedback(result.item, config.feishu);
       return json(res, result.ok ? 200 : 400, result);
     }
 
@@ -102,6 +130,7 @@ const server = createServer(async (req, res) => {
         quotaPackageBytes: config.quotaPackageBytes,
         quotaTotalBytes: config.quotaTotalBytes,
         accounts: usage.accounts,
+        uploaded: usage.uploaded,
         totalBytes: usage.totalBytes,
         largest: usage.largest,
         webdav: Boolean(config.webdav),

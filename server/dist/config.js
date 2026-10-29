@@ -22,5 +22,8 @@ export function loadConfig(baseDir) {
         quotaTotalBytes: Number(secrets.quotaTotalBytes || 50 * 1024 * 1024),
         adminKey: typeof secrets.adminKey === 'string' && secrets.adminKey.trim() ? secrets.adminKey.trim() : null,
         logDir: `${baseDir}/logs`,
+        feishu: secrets.feishu && secrets.feishu.appId && secrets.feishu.appSecret && Array.isArray(secrets.feishu.chatIds) && secrets.feishu.chatIds.length
+            ? { appId: secrets.feishu.appId, appSecret: secrets.feishu.appSecret, chatIds: secrets.feishu.chatIds, verificationToken: secrets.feishu.verificationToken ?? '' }
+            : null,
     };
 }

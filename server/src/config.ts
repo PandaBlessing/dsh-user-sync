@@ -17,10 +17,14 @@ export interface ServerConfig {
   quotaTotalBytes: number;
   /** 运营方监控接口密钥（secrets.json 的 adminKey；未配置时该接口关闭）。 */
   adminKey: string | null;
+  /** 飞书通知配置（未配置为 null）。 */
+  feishu: { appId: string; appSecret: string; chatIds: string[]; verificationToken: string } | null;
   logDir: string;
 }
 
 interface Secrets {
+  /** 飞书自建应用（新反馈通知用，仅服务端配置）。 */
+  feishu?: { appId?: string; appSecret?: string; chatIds?: string[]; verificationToken?: string };
   port?: number;
   dataDir?: string;
   webdav?: WebdavConfig;
@@ -52,5 +56,8 @@ export function loadConfig(baseDir: string): ServerConfig {
     quotaTotalBytes: Number(secrets.quotaTotalBytes || 50 * 1024 * 1024),
     adminKey: typeof secrets.adminKey === 'string' && secrets.adminKey.trim() ? secrets.adminKey.trim() : null,
     logDir: `${baseDir}/logs`,
+    feishu: secrets.feishu && secrets.feishu.appId && secrets.feishu.appSecret && Array.isArray(secrets.feishu.chatIds) && secrets.feishu.chatIds.length
+      ? { appId: secrets.feishu.appId, appSecret: secrets.feishu.appSecret, chatIds: secrets.feishu.chatIds, verificationToken: secrets.feishu.verificationToken ?? '' }
+      : null,
   };
 }

@@ -66,7 +66,7 @@ export async function submitFeedback(storage, input, meta) {
     };
     try {
         await storage.put(FEEDBACK_PARTITION, item.id, Buffer.from(JSON.stringify(item, null, 2), 'utf8'));
-        return { ok: true, id: item.id };
+        return { ok: true, id: item.id, item };
     }
     catch {
         return { ok: false, error: 'storage-error' };

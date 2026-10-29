@@ -164,7 +164,7 @@ https://dsh-user-sync-test.wenzhi.info
 
 保存后插件会用官方账号 `accountKey` 自动配对（无需登录运营方账号）。
 
-## 9. 运营方监控接口（供 dsh-admin 等后台调用）
+## 9. 运营方监控接口（供运营方调用）
 
 只读用量接口，用于监控坚果云占用与账号规模：
 
@@ -208,5 +208,3 @@ Authorization: Bearer <secrets.json 的 adminKey>
 | 服务 | 端口 | 说明 |
 |---|---|---|
 | dsh-user-sync 服务端 | **10001** | systemd DSH_SYNC_PORT=10001；仅监听 127.0.0.1，经 nginx 对外 |
-| dsh-admin 管理后台 | **10002** | 前端 VUE_APP_BASE_API=http://localhost:10002 |
-| 管理后台 → 服务端 | http://127.0.0.1:10001 | 本地端口调用（腾讯云同机部署时同样如此） |

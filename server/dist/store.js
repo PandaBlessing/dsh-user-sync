@@ -78,6 +78,7 @@ export function createStore(dataDir) {
             largest.sort((a, b) => b.bytes - a.bytes);
             return {
                 accounts: keys.length,
+                uploaded: largest.filter((item) => item.packages > 0).length,
                 totalBytes: largest.reduce((sum, item) => sum + item.bytes, 0),
                 largest: largest.slice(0, 20),
             };
