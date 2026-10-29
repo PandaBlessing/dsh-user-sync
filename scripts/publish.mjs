@@ -7,6 +7,7 @@
 //   NPM_TOKEN=xxx node scripts/publish.mjs        # CI 里用环境变量，优先级高于 .env.local
 //
 // token 存放位置与约定见 .env.local.example（第一行顶部注释）。
+// 本地固定 token 文件：H:/work/dsh/npm-token.txt（可用 DSH_NPM_TOKEN_FILE 覆盖），优先级低于 NPM_TOKEN 环境变量与 .env.local。
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
