@@ -69,7 +69,13 @@ export function createFolderTransport({ dir }: { dir: string }): Transport {
       writeFileSync(join(dir, name), data);
     },
 
-    async remove(name: string): Promise<void> {
+        async post(path: string, body: unknown): Promise<Record<string, unknown>> {
+      void path;
+      void body;
+      throw new Error('folder 传输不支持反馈提交（仅调试用）');
+    },
+
+async remove(name: string): Promise<void> {
       assertSafeName(name);
       rmSync(join(dir, name), { force: true });
     },

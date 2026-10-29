@@ -8,6 +8,8 @@ import { readManifest } from './lib/archive.js';
 import { createStore } from './store.js';
 import { createLocal } from './storage/local.js';
 import { createWebdav } from './storage/webdav.js';
+import { getAdminFile, getAdminPackage, listAdminPackages } from './admin.js';
+import { clientIp, deleteFeedback, deleteFeedbackBefore, feedbackStats, getFeedbackFile, hitRateLimit, listFeedback, submitFeedback, updateFeedbackStatus } from './feedback.js';
 
 const PACKAGE_RE = /^dsh-user-sync-\d{8}-\d{4}-[a-z0-9]{6,16}\.tar\.gz$/;
 const ACCOUNT_RE = /^[0-9a-f]{16}$/;
@@ -71,6 +73,21 @@ const server = createServer(async (req, res) => {
       const storageTest = await storage.test();
       return json(res, 200, { ok: true, storage: storage.id, storageTest, webdav: Boolean(config.webdav) });
     }
+    if (req.method === 'POST' && path === '/v1/feedback') {
+      action = 'feedback';
+      const ip = clientIp(req.headers as Record<string, string | string[] | undefined>);
+      if (hitRateLimit(ip)) return json(res, 429, { ok: false, error: 'rate-limited' });
+      let input: Record<string, unknown> = {};
+      try { input = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid-json' }); }
+      const accountKey = typeof (input.context as Record<string, unknown>)?.accountKey === 'string' ? (input.context as Record<string, unknown>).accountKey as string : '';
+      const result = await submitFeedback(storage, input, {
+        accountHint: accountKey.slice(0, 6),
+        pluginVersion: typeof input.pluginVersion === 'string' ? input.pluginVersion : '',
+        platform: typeof input.platform === 'string' ? input.platform : '',
+      });
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
     // 运营方监控：总占用与各账号占用（需 secrets.json 的 adminKey；未配置则关闭）
     if (req.method === 'GET' && path === '/v1/admin/usage') {
       action = 'admin-usage';
@@ -89,6 +106,95 @@ const server = createServer(async (req, res) => {
         largest: usage.largest,
         webdav: Boolean(config.webdav),
       });
+    }
+
+    // 运营方后台：同步包汇总与单包/单文件查看（adminKey 鉴权）
+    if (req.method === 'GET' && path === '/v1/admin/packages') {
+      action = 'admin-packages';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      return json(res, 200, await listAdminPackages(store, storage));
+    }
+
+    if (req.method === 'GET' && path === '/v1/admin/package') {
+      action = 'admin-package';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      const accountKey = url.searchParams.get('account') ?? '';
+      if (!accountKey) return json(res, 400, { error: 'missing-account' });
+      return json(res, 200, await getAdminPackage(store, storage, accountKey));
+    }
+
+    if (req.method === 'GET' && path === '/v1/admin/package/file') {
+      action = 'admin-package-file';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      const accountKey = url.searchParams.get('account') ?? '';
+      const filePath = url.searchParams.get('path') ?? '';
+      if (!accountKey || !filePath) return json(res, 400, { error: 'missing-params' });
+      return json(res, 200, await getAdminFile(store, storage, accountKey, filePath));
+    }
+
+    // 运营方后台：用户反馈
+    if (req.method === 'GET' && path === '/v1/admin/feedback') {
+      action = 'admin-feedback';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      return json(res, 200, await listFeedback(storage));
+    }
+
+    if (req.method === 'GET' && path === '/v1/admin/feedback/file') {
+      action = 'admin-feedback-file';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      const id = url.searchParams.get('id') ?? '';
+      const result = await getFeedbackFile(storage, id);
+      return json(res, result.ok ? 200 : 404, result);
+    }
+
+    if (req.method === 'GET' && path === '/v1/admin/feedback/stats') {
+      action = 'admin-feedback-stats';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      return json(res, 200, await feedbackStats(storage));
+    }
+
+    if (req.method === 'POST' && path === '/v1/admin/feedback/delete') {
+      action = 'admin-feedback-delete';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      let input: Record<string, unknown> = {};
+      try { input = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid-json' }); }
+      const id = typeof input.id === 'string' ? input.id : '';
+      if (!id) return json(res, 400, { ok: false, error: 'missing-id' });
+      const result = await deleteFeedback(storage, id);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
+    if (req.method === 'POST' && path === '/v1/admin/feedback/delete-before') {
+      action = 'admin-feedback-delete-before';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      let input: Record<string, unknown> = {};
+      try { input = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid-json' }); }
+      const before = typeof input.before === 'string' ? input.before : '';
+      if (!before) return json(res, 400, { ok: false, error: 'missing-before' });
+      const result = await deleteFeedbackBefore(storage, before);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
+    if (req.method === 'POST' && path === '/v1/admin/feedback/status') {
+      action = 'admin-feedback-status';
+      if (!config.adminKey) return json(res, 404, { error: 'admin-disabled' });
+      if (bearerOf(req.headers) !== config.adminKey) return json(res, 401, { error: 'unauthorized' });
+      let input: Record<string, unknown> = {};
+      try { input = JSON.parse(body.toString('utf8') || '{}'); } catch { return json(res, 400, { ok: false, error: 'invalid-json' }); }
+      const id = typeof input.id === 'string' ? input.id : '';
+      const status = typeof input.status === 'string' ? input.status : '';
+      const note = typeof input.note === 'string' ? input.note : '';
+      const operator = typeof input.operator === 'string' ? input.operator : 'admin';
+      const result = await updateFeedbackStatus(storage, id, status, note, operator);
+      return json(res, result.ok ? 200 : 404, result);
     }
 
     if (req.method === 'POST' && path === '/v1/auth/register') {

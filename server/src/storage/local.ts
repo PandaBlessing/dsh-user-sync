@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 import type { ServerStorage } from './types.ts';
 
@@ -21,6 +21,15 @@ export function createLocal(rootDir: string): ServerStorage {
     },
     async remove(accountKey: string, id: string) {
       rmSync(`${dirFor(accountKey)}/${id}`, { force: true });
+    },
+    async list(accountKey: string) {
+      try {
+        return readdirSync(dirFor(accountKey), { withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map((entry) => ({ name: entry.name, size: statSync(`${dirFor(accountKey)}/${entry.name}`).size }));
+      } catch {
+        return [];
+      }
     },
   };
 }

@@ -12,10 +12,6 @@ function writeJsonAtomic(path, value) {
     writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
     renameSync(tmp, path);
 }
-/**
- * 本地元数据：账号、包索引、审计。
- * token 明文存 accounts.json（0600）：服务端本身就是信任边界，且 login 要取回同一 token。
- */
 export function createStore(dataDir) {
     mkdirSync(dataDir, { recursive: true });
     const accountsPath = `${dataDir}/accounts.json`;
@@ -45,6 +41,9 @@ export function createStore(dataDir) {
                     return accountKey;
             }
             return null;
+        },
+        listAccounts() {
+            return Object.keys(accounts);
         },
         listPackages(accountKey) {
             return Object.entries(packages[accountKey] ?? {}).map(([id, meta]) => ({ id, ...meta }));

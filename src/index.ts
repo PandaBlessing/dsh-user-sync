@@ -35,6 +35,17 @@ export const inject: string[] = [];
 /** 内置服务地址（运营方 API）。用户可在 state.baseUrl 覆盖；这里必须是可用的正式地址。 */
 export const DEFAULT_BASE_URL = 'https://dsh-user-sync-test.wenzhi.info';
 
+/** 开发版判定：环境变量 DSH_USER_SYNC_DEV=1，或插件以链接/开发目录安装（真实路径不在 node_modules 下）。 */
+export function isDevInstall(): boolean {
+  if (process.env.DSH_USER_SYNC_DEV === '1') return true;
+  try {
+    const here = fileURLToPath(new URL('.', import.meta.url));
+    return !here.includes('node_modules');
+  } catch {
+    return false;
+  }
+}
+
 /** 非用户级模块：默认不选，首次勾选要提示一次。 */
 const NON_USER_LEVEL = ['projectMemory', 'sessions'];
 
@@ -482,6 +493,53 @@ export function apply(ctx: CordisContextLike) {
         },
       },
       {
+        // 用户反馈（匿名）：直连服务端 POST /v1/feedback
+        path: '/api/dsh-user-sync/feedback',
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request: Request) => {
+          let body: Record<string, unknown> = {};
+          try { body = (await request.json()) as Record<string, unknown>; } catch { return json({ ok: false, error: 'invalid-json' }, 400); }
+          try {
+            const res = await fetch(`${effectiveBaseUrl()}/v1/feedback`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                type: typeof body.type === 'string' ? body.type : 'other',
+                content: typeof body.content === 'string' ? body.content : '',
+                contact: typeof body.contact === 'string' ? body.contact : '',
+                context: body.context && typeof body.context === 'object' ? body.context : {},
+                pluginVersion: PLUGIN_VERSION,
+                platform: typeof body.platform === 'string' ? body.platform : '',
+              }),
+              signal: AbortSignal.timeout(15000),
+            });
+            const data = (await res.json().catch(() => ({}))) as { ok?: boolean; id?: string; error?: string };
+            return json({ ok: data.ok === true, id: data.id, error: data.error }, res.ok ? 200 : 400);
+          } catch (error) {
+            return json({ ok: false, error: (error as Error).message }, 500);
+          }
+        },
+      },
+      {
+        // 开发版：在本地服务端与远程服务端之间切换（仅 DSH_USER_SYNC_DEV=1 时可用）
+        path: '/api/dsh-user-sync/switch-env',
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request: Request) => {
+          if (!isDevInstall()) return json({ ok: false, error: 'dev-only' }, 403);
+          let body: Record<string, unknown> = {};
+          try { body = (await request.json()) as Record<string, unknown>; } catch { return json({ ok: false, error: 'invalid-json' }, 400); }
+          const target = body.target === 'local' ? 'local' : body.target === 'remote' ? 'remote' : '';
+          if (!target) return json({ ok: false, error: 'invalid-target' }, 400);
+          const next = target === 'local' ? 'http://127.0.0.1:10001' : DEFAULT_BASE_URL;
+          const state = loadState(statePath);
+          state.baseUrl = next;
+          saveState(statePath, state);
+          return json({ ok: true, baseUrl: next });
+        },
+      },
+      {
         // 一键更新：在 profile 里用 pnpm add 真实更新安装包（installBundle 只登记 bundle、不改安装包）
         path: '/api/dsh-user-sync/update',
         methods: ['POST'],
@@ -573,6 +631,7 @@ export function apply(ctx: CordisContextLike) {
               transportSetting: sync.getTransportId(),
               baseUrl: effectiveBaseUrl(),
               baseUrlSource: typeof state.baseUrl === 'string' && state.baseUrl.trim() ? 'user' : 'default',
+              dev: isDevInstall(),
               account: { hint: state.accountKeyHint ?? null, paired: Boolean(state.pairedAt) },
               deviceId: state.deviceId ?? null,
               lastApplied: state.lastApplied ?? null,

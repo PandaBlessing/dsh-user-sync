@@ -1,6 +1,6 @@
 {
   "name": "@pandablessing/dsh-user-sync",
-  "version": "1.0.25",
+  "version": "1.0.27",
   "description": "DSH用户级配置同步插件，更新需重启DSH",
   "type": "module",
   "main": "lib/index.js",

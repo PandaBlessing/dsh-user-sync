@@ -58,10 +58,12 @@ test('宿主入口：导出 name/inject，apply 注册全部路由', () => {
     '/api/dsh-user-sync/check',
     '/api/dsh-user-sync/config',
     '/api/dsh-user-sync/consent',
+    '/api/dsh-user-sync/feedback',
     '/api/dsh-user-sync/install',
     '/api/dsh-user-sync/ping',
     '/api/dsh-user-sync/scan',
     '/api/dsh-user-sync/status',
+    '/api/dsh-user-sync/switch-env',
     '/api/dsh-user-sync/update',
     '/api/dsh-user-sync/update-check',
     '/api/dsh-user-sync/upload',
@@ -98,7 +100,7 @@ test('路由在 connection 服务晚到时才注册（回归：服务未就绪�
     get: (key) => (key === 'connection' ? { fetch: { register: (route) => (routes.push(route), () => {}) } } : undefined),
     effect: (fn) => fn(),
   });
-  assert.equal(routes.length, 11, '服务出现后应注册全部路由');
+  assert.equal(routes.length, 13, '服务出现后应注册全部路由');
 
   rmSync(tmpHome, { recursive: true, force: true });
 });

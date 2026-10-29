@@ -321,6 +321,16 @@ export function createSync({
     }
   }
 
+  /** 提交用户反馈（匿名，经传输层 POST /v1/feedback）。 */
+  async function submitFeedback(payload: Record<string, unknown>): Promise<{ ok: boolean; id?: string; error?: string }> {
+    try {
+      const data = await activeTransport.post('/v1/feedback', payload);
+      return { ok: data.ok === true, id: typeof data.id === 'string' ? data.id : undefined, error: typeof data.error === 'string' ? data.error : undefined };
+    } catch (error) {
+      return { ok: false, error: (error as { code?: string })?.code ?? (error as Error).message };
+    }
+  }
+
   /** 只读远端元数据，返回判定结果；不下载、不写盘。 */
   async function check(): Promise<CheckResult> {
     const remoteList = await activeTransport.list();
@@ -424,5 +434,5 @@ export function createSync({
     }
   }
 
-  return { paths, pack, upload, check, applyRemote, getModules, setModules, setTransport, getTransportId: () => activeTransport.id };
+  return { paths, pack, upload, check, applyRemote, getModules, setModules, setTransport, submitFeedback, getTransportId: () => activeTransport.id };
 }

@@ -24,6 +24,7 @@ interface StatusPayload {
   transport?: string;
   transportSetting?: string;
   baseUrl?: string | null;
+  dev?: boolean;
   baseUrlSource?: string;
   account?: { hint?: string | null; paired?: boolean };
   deviceId?: string | null;
@@ -391,6 +392,59 @@ if (typeof window !== 'undefined') {
       const [updateInfo, setUpdateInfo] = R.useState<{ current?: string; latest?: string | null; available?: boolean } | null>(null);
       // 更新完成弹窗（重启提示放在弹窗里，底部状态行看不到）
       const [updateDone, setUpdateDone] = R.useState<string | null>(null);
+      // 用户反馈（设计建议/问题）
+      const [feedbackOpen, setFeedbackOpen] = R.useState(false);
+      const [feedbackType, setFeedbackType] = R.useState('design');
+      const [feedbackContent, setFeedbackContent] = R.useState('');
+      const [feedbackContact, setFeedbackContact] = R.useState('');
+      const [feedbackBusy, setFeedbackBusy] = R.useState(false);
+      const [feedbackDone, setFeedbackDone] = R.useState<string | null>(null);
+      const [feedbackResult, setFeedbackResult] = R.useState<{ ok: boolean; message: string } | null>(null);
+
+      const openFeedback = () => {
+        try {
+          const draft = JSON.parse(localStorage.getItem('dsh-user-sync:feedback-draft') || '{}') as { type?: string; content?: string; contact?: string };
+          if (draft.type) setFeedbackType(draft.type);
+          if (draft.content) setFeedbackContent(draft.content);
+          if (draft.contact) setFeedbackContact(draft.contact);
+        } catch { /* 草稿损坏忽略 */ }
+        setFeedbackDone(null);
+        setFeedbackOpen(true);
+      };
+
+      const saveDraft = () => {
+        try {
+          localStorage.setItem('dsh-user-sync:feedback-draft', JSON.stringify({ type: feedbackType, content: feedbackContent, contact: feedbackContact }));
+        } catch { /* 忽略 */ }
+      };
+
+      const submitFeedback = async () => {
+        if (!feedbackContent.trim()) return;
+        setFeedbackBusy(true);
+        try {
+          const result = await fetchJson<{ ok?: boolean; id?: string; error?: string }>(`${API}/feedback`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ type: feedbackType, content: feedbackContent, contact: feedbackContact, context: { accountHint: status?.account?.hint ?? '' }, platform: typeof navigator !== 'undefined' ? navigator.platform : '' }),
+          });
+          if (result.ok) {
+            setFeedbackOpen(false);
+            setFeedbackDone(null);
+            setFeedbackContent('');
+            setFeedbackContact('');
+            try { localStorage.removeItem('dsh-user-sync:feedback-draft'); } catch { /* 忽略 */ }
+            setFeedbackResult({ ok: true, message: `反馈已提交，感谢反馈。编号：${result.id ?? ''}` });
+          } else {
+            setFeedbackOpen(false);
+            setFeedbackResult({ ok: false, message: `反馈提交失败：${result.error ?? '未知错误'}` });
+          }
+        } catch (error) {
+          setFeedbackOpen(false);
+          setFeedbackResult({ ok: false, message: `反馈提交失败：${String(error)}` });
+        } finally {
+          setFeedbackBusy(false);
+        }
+      };
       // 当前进行中的动作（上传/同步），用于按钮文案
       const [busyAction, setBusyAction] = R.useState<'upload' | 'pull' | null>(null);
       // 操作结果弹窗（上传/同步完成后弹出）
@@ -731,6 +785,33 @@ if (typeof window !== 'undefined') {
             { style: styles.row },
             R.createElement('span', null, '服务地址'),
             R.createElement('span', null, `${status?.baseUrl ?? '（未解析）'}${status?.baseUrlSource === 'user' ? '（自定义）' : '（内置）'}`),
+            status?.dev
+              ? R.createElement(
+                  'button',
+                  {
+                    style: styles.secondary,
+                    onClick: async () => {
+                      const target = status?.baseUrl?.includes('127.0.0.1') ? 'remote' : 'local';
+                      try {
+                        const result = await fetchJson<{ ok?: boolean; baseUrl?: string; error?: string }>(`${API}/switch-env`, {
+                          method: 'POST',
+                          headers: { 'content-type': 'application/json' },
+                          body: JSON.stringify({ target }),
+                        });
+                        if (result.ok) {
+                          setNotice({ kind: 'result', data: { detail: `已切换到${target === 'local' ? '本地服务端' : '远程服务端'}：${result.baseUrl ?? ''}` } });
+                          refresh();
+                        } else {
+                          setNotice({ kind: 'error', data: { detail: `切换失败：${result.error ?? '未知错误'}` } });
+                        }
+                      } catch (error) {
+                        setNotice({ kind: 'error', data: { detail: String(error) } });
+                      }
+                    },
+                  },
+                  status?.baseUrl?.includes('127.0.0.1') ? '切到远程' : '切到本地',
+                )
+              : null,
           ),
           R.createElement(
             'div',
@@ -823,7 +904,12 @@ if (typeof window !== 'undefined') {
         R.createElement(
           'div',
           { style: styles.card },
-          R.createElement('strong', null, '自动检查'),
+          R.createElement(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' } },
+            R.createElement('strong', null, '自动检查'),
+            R.createElement('button', { style: styles.secondary, onClick: openFeedback }, '反馈'),
+          ),
           R.createElement(
             'label',
             { style: styles.moduleRow },
@@ -963,6 +1049,46 @@ if (typeof window !== 'undefined') {
                   { style: styles.actions },
                   R.createElement('button', { style: styles.primary, onClick: () => setResultDialog(null) }, '知道了'),
                 ),
+              ),
+            )
+          : null,
+        feedbackOpen
+          ? R.createElement(
+              'div',
+              { style: styles.overlay, onClick: () => setFeedbackOpen(false) },
+              R.createElement(
+                'div',
+                { style: styles.dialog, onClick: (event: ClickEventLike) => event.stopPropagation?.() },
+                R.createElement('strong', null, '反馈'),
+                feedbackDone
+                  ? R.createElement(
+                      'div',
+                      null,
+                      R.createElement('p', { style: styles.muted }, '已收到，感谢反馈。'),
+                      R.createElement('p', { style: styles.muted }, `反馈编号：${feedbackDone}`),
+                      R.createElement('div', { style: styles.actions }, R.createElement('button', { style: styles.primary, onClick: () => setFeedbackOpen(false) }, '知道了')),
+                    )
+                  : R.createElement(
+                      'div',
+                      null,
+                      R.createElement('div', { style: styles.row }, R.createElement('span', null, '类型'), R.createElement('select', { value: feedbackType, onChange: (event: ChangeEventLike) => setFeedbackType(String(event.target.value ?? 'design')), style: { padding: '6px 8px', border: '1px solid #d0d7de', borderRadius: 6, fontSize: 12, width: '100%', boxSizing: 'border-box' } }, R.createElement('option', { value: 'design' }, '设计建议'), R.createElement('option', { value: 'feature' }, '功能建议'), R.createElement('option', { value: 'bug' }, '问题'), R.createElement('option', { value: 'other' }, '其他'))),
+                      R.createElement('textarea', { value: feedbackContent, placeholder: '请描述你的建议或问题（提交内容运营方可见，请勿填写密码/密钥）', rows: 5, style: { padding: '6px 8px', border: '1px solid #d0d7de', borderRadius: 6, fontSize: 12, width: '100%', boxSizing: 'border-box' }, onChange: (event: ChangeEventLike) => { setFeedbackContent(String(event.target.value ?? '')); saveDraft(); } }),
+                      R.createElement('input', { value: feedbackContact, placeholder: '联系方式（可选）', style: { padding: '6px 8px', border: '1px solid #d0d7de', borderRadius: 6, fontSize: 12, width: '100%', boxSizing: 'border-box' }, onChange: (event: ChangeEventLike) => { setFeedbackContact(String(event.target.value ?? '')); saveDraft(); } }),
+                      R.createElement('div', { style: styles.actions }, R.createElement('button', { style: styles.primary, disabled: feedbackBusy || !feedbackContent.trim(), onClick: submitFeedback }, feedbackBusy ? '提交中…' : '提交'), R.createElement('button', { style: styles.secondary, onClick: () => setFeedbackOpen(false) }, '取消')),
+                    ),
+              ),
+            )
+          : null,
+        feedbackResult
+          ? R.createElement(
+              'div',
+              { style: styles.overlay, onClick: () => setFeedbackResult(null) },
+              R.createElement(
+                'div',
+                { style: styles.dialog, onClick: (event: ClickEventLike) => event.stopPropagation?.() },
+                R.createElement('strong', null, feedbackResult.ok ? '提交成功' : '提交失败'),
+                R.createElement('p', { style: styles.muted }, feedbackResult.message),
+                R.createElement('div', { style: styles.actions }, R.createElement('button', { style: styles.primary, onClick: () => setFeedbackResult(null) }, '知道了')),
               ),
             )
           : null,

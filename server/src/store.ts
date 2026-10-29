@@ -30,6 +30,8 @@ function writeJsonAtomic(path: string, value: unknown): void {
  * 本地元数据：账号、包索引、审计。
  * token 明文存 accounts.json（0600）：服务端本身就是信任边界，且 login 要取回同一 token。
  */
+export type Store = ReturnType<typeof createStore>;
+
 export function createStore(dataDir: string) {
   mkdirSync(dataDir, { recursive: true });
   const accountsPath = `${dataDir}/accounts.json`;
@@ -63,6 +65,9 @@ export function createStore(dataDir: string) {
       return null;
     },
 
+    listAccounts(): string[] {
+      return Object.keys(accounts);
+    },
     listPackages(accountKey: string): Array<{ id: string } & PackageMeta> {
       return Object.entries(packages[accountKey] ?? {}).map(([id, meta]) => ({ id, ...meta }));
     },

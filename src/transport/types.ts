@@ -19,4 +19,6 @@ export interface Transport {
   get(name: string): Promise<Buffer>;
   put(name: string, data: Buffer): Promise<void>;
   remove(name: string): Promise<void>;
+  /** 通用 POST（反馈等一次性接口）。 */
+  post(path: string, body: unknown): Promise<Record<string, unknown>>;
 }

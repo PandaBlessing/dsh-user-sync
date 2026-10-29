@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 /** 本地磁盘存储（调试 / 无 WebDAV 时的回退）。 */
 export function createLocal(rootDir) {
     const dirFor = (accountKey) => `${rootDir}/packages/${accountKey}`;
@@ -17,6 +17,16 @@ export function createLocal(rootDir) {
         },
         async remove(accountKey, id) {
             rmSync(`${dirFor(accountKey)}/${id}`, { force: true });
+        },
+        async list(accountKey) {
+            try {
+                return readdirSync(dirFor(accountKey), { withFileTypes: true })
+                    .filter((entry) => entry.isFile())
+                    .map((entry) => ({ name: entry.name, size: statSync(`${dirFor(accountKey)}/${entry.name}`).size }));
+            }
+            catch {
+                return [];
+            }
         },
     };
 }

@@ -65,5 +65,33 @@ export function createWebdav({ baseUrl, username, password, root = 'dsh-user-syn
             if (![200, 204, 404].includes(response.status))
                 throw new Error(`DELETE 失败: ${response.status}`);
         },
+        async list(accountKey) {
+            const response = await request('PROPFIND', `/${root}/${accountKey}/`, { headers: { depth: '1' } });
+            if (response.status === 404)
+                return [];
+            if (!response.ok)
+                throw new Error(`PROPFIND 失败: ${response.status}`);
+            const xml = await response.text();
+            const items = [];
+            const base = `/${root}/${accountKey}/`;
+            for (const match of xml.matchAll(/<d:href>([^<]+)<\/d:href>/g)) {
+                let href = match[1];
+                try {
+                    href = decodeURIComponent(href);
+                }
+                catch {
+                    // 保持原始 href
+                }
+                const idx = href.indexOf(base);
+                if (idx < 0)
+                    continue;
+                const name = href.slice(idx + base.length).replace(/\/$/, '');
+                if (!name || name.includes('/'))
+                    continue;
+                const sizeMatch = xml.slice(match.index ?? 0).match(/<d:getcontentlength>(\d+)<\/d:getcontentlength>/);
+                items.push({ name, size: sizeMatch ? Number(sizeMatch[1]) : 0 });
+            }
+            return items;
+        },
     };
 }

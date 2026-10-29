@@ -229,7 +229,17 @@ export function createApiTransport({
       });
     },
 
-    async remove(id: string): Promise<void> {
+        async post(path: string, body: unknown) {
+      const response = await request('POST', path, {
+        body: JSON.stringify(body ?? {}),
+        headers: { 'content-type': 'application/json' },
+      });
+      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!response.ok) throw Object.assign(new Error(String(data.error ?? 'post-failed')), { status: response.status, code: data.error });
+      return data;
+    },
+
+async remove(id: string): Promise<void> {
       if (!isPackageId(id)) throw new ApiError('E_BAD_NAME', `非法包名: ${id}`);
       await request('DELETE', `/v1/packages/${encodeURIComponent(id)}`);
     },
