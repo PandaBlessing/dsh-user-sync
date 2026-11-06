@@ -41,21 +41,22 @@ test('client bundle 导出 apply 与 inject，inject 是服务名 slots', () => 
 test('client apply 注册 settings.section 面板', () => {
   const exported = loadClientBundle();
   const registered = [];
-  const ctx = {
-    slots: {
-      inject: (name, callback) => {
-        assert.equal(name, 'settings.section');
-        callback();
-      },
-      register: (descriptor, component) => {
-        registered.push({ descriptor, component });
-        return () => {};
-      },
+  const slots = {
+    inject: (name, callback) => {
+      assert.ok(['settings.section', 'plugins.bundle.config'].includes(name), name);
+      callback();
+    },
+    register: (descriptor, component) => {
+      registered.push({ descriptor, component });
+      return () => {};
     },
   };
+  const ctx = { slots };
   exported.apply(ctx);
-  assert.equal(registered.length, 1);
-  assert.equal(registered[0].descriptor.name, 'settings.section');
+  assert.equal(registered.length, 2, '设置面板 + 详情页配置卡片');
+  const byName = (name) => registered.find((item) => item.descriptor.name === name);
+  assert.ok(byName('settings.section'), '设置面板');
+  assert.ok(byName('plugins.bundle.config'), '详情页配置卡片');
   assert.equal(registered[0].descriptor.id, 'user-sync');
   assert.equal(registered[0].descriptor.order, 50);
   assert.equal(typeof registered[0].component, 'function');

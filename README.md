@@ -41,9 +41,11 @@ pnpm add @pandablessing/dsh-user-sync
 | 配置改乱了想回滚 | 无备份 | 每次应用前生成 `pre-restore` 快照 |
 | 担心密钥被传走 | —— | 文件名黑名单 + 内容模式扫描，命中直接拒绝打包 |
 
-**同步范围（四类用户级）：** 技能 `~/.agents/skills`、插件清单（profile 声明与锁文件）、配置 `cordis.patch.yml`（含自定义 agent 预设）、用户记忆 `AGENTS.md` + `memories/`。项目记忆默认不选，会话不参与同步。
+**同步范围（四类用户级）：** 技能 `~/.agents/skills` 与 `~/.dsh/skills`、插件清单（profile 声明与锁文件）、配置 `cordis.patch.yml`（含自定义 agent 预设）、用户记忆 `AGENTS.md` + `memories/`。项目记忆默认不选，会话不参与同步。
 
 ## 功能细节
+
+- **插件详情页显示同步状态**：打开「插件 → 设置同步」，描述下方直接看到账号、版本、服务地址、上次检查与结论。
 
 - **四类用户级资产**：技能、插件清单、配置（`cordis.patch.yml`，含自定义 agent 预设）、用户记忆；项目记忆默认不选，会话不参与同步。
 - **包级新覆盖旧**：按 `createdAt` 比较，覆盖前弹窗确认，先快照再写盘。
@@ -71,7 +73,7 @@ pnpm add @pandablessing/dsh-user-sync@latest
 - 「从远端同步」→ 检查远端，覆盖前弹窗确认；
 - 「反馈」→ 提交设计建议 / 功能建议 / 问题。
 
-服务地址内置（`https://dsh-user-sync-test.wenzhi.info`），传输固定走运营方 API；需要自建服务时在 `state.json` 写 `baseUrl` 覆盖。
+服务地址内置（`https://dsh-user-sync.wenzhi.info`），传输固定走运营方 API；需要自建服务时在 `state.json` 写 `baseUrl` 覆盖。
 ## 卸载与回滚
 
 **卸载**：
@@ -110,6 +112,9 @@ pnpm remove @pandablessing/dsh-user-sync
 - 远端只保留 1 份包，上传即覆盖；每次应用在本地生成 `pre-restore` 快照。
 
 ## 构建与测试
+
+- host 侧 `tsc` 输出 `lib/`；浏览器侧 `pnpm run build:client`（tsdown → `client/client.js`）。
+- 本地脚本：`python scripts/dev.py start|stop|status|restart`（本地服务）、`verify.py`（构建+测试+接口）、`deploy.py`（部署）、`publish.py`（npm 发布）。
 
 源码是 TypeScript，构建产物 `lib/` 与 `server/dist/` 已提交（junction 安装与部署直接用）。
 

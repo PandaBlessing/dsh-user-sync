@@ -176,7 +176,7 @@ if (typeof window !== 'undefined') {
     const USER_LEVEL = ['skills', 'plugins', 'config', 'userMemory'];
     /** 每个模块同步的内容简介（按钮悬停与下方小字）。 */
     const MODULE_HINTS: Record<string, string> = {
-      skills: '~/.agents/skills 下的技能包（需含 SKILL.md）',
+      skills: '~/.dsh/skills 与 ~/.agents/skills 下的技能包（需含 SKILL.md）',
       plugins: 'profile 的 package.json 与依赖锁文件',
       config: 'cordis.patch.yml（含自定义 agent 预设）与 AGENTS.md',
       userMemory: 'AGENTS.md 与 memories/ 下的用户级记忆（MEMORY/USER/KEY）',
@@ -629,6 +629,20 @@ if (typeof window !== 'undefined') {
         }
       };
 
+      /** 把服务端返回的 JSON 错误体解析成可读文案（如 {"error":"E_EMPTY_PACKAGE","detail":"..."}）。 */
+      const parseServerError = (detail?: string): string | undefined => {
+        if (!detail) return undefined;
+        try {
+          const data = JSON.parse(detail) as { error?: string; detail?: string };
+          if (data?.error === 'E_EMPTY_PACKAGE') return '没有可同步的文件（请检查同步范围）。';
+          if (typeof data?.detail === 'string') return data.detail;
+          if (typeof data?.error === 'string') return data.error;
+        } catch {
+          return undefined;
+        }
+        return undefined;
+      };
+
       /** force=true 表示用户已确认「用本机覆盖远端」（远端更新时才需要）。 */
       const upload = async (force = false) => {
         setBusy(true);
@@ -661,7 +675,7 @@ if (typeof window !== 'undefined') {
               error: true,
               detail: hint
                 ? `${hint}（${result.detail ?? result.code}）`
-                : result.detail ?? '上传失败：远端存储可能空间不足或不可用，请联系维护者。',
+                : parseServerError(result.detail) ?? result.detail ?? '上传失败：远端存储可能空间不足或不可用，请联系维护者。',
             });
           }
           refresh();
@@ -683,17 +697,21 @@ if (typeof window !== 'undefined') {
           if (result.error) {
             setResultDialog({ title: '检查失败', detail: result.detail ?? '检查远端失败', error: true });
           } else {
-            // 详情仍用结果卡展示；覆盖动作改为弹窗确认
-            setResultDialog({ title: '检查完成', detail: result.detail ?? (result.decision?.action === 'skip' ? '已是最新' : '本地有更新，可上传到远端') });
             const action = result.decision?.action;
             if ((action === 'pull' || action === 'confirm') && result.latest?.name) {
+              // 远端有更新：只弹覆盖确认弹窗（不再先弹「检查完成」，避免文案与动作不一致）
               const overwritten = (result.plan?.overwritten ?? []).length;
               setOverwriteDialog({
                 kind: 'pull',
                 name: result.latest.name,
                 detail: `远端包 ${result.latest.name}（${result.meta?.createdAt ?? '时间未知'}），将覆盖本机 ${overwritten} 个文件。`,
               });
+            } else if (action === 'push') {
+              setResultDialog({ title: '检查完成', detail: '本地有更新，可上传到远端（或用「上传用户配置」覆盖远端）。' });
+            } else {
+              setResultDialog({ title: '检查完成', detail: result.detail ?? '已是最新' });
             }
+            refresh();
           }
         } catch (error) {
           setResultDialog({ title: '检查失败', detail: String(error), error: true });
@@ -1095,21 +1113,68 @@ if (typeof window !== 'undefined') {
       );
     }
 
+
+    // 插件详情页的只读状态摘要（settings.section），操作仍走「设置 → 设置同步」
+    function UserSyncStatusSection() {
+      const [status, setStatus] = R.useState<StatusPayload | null>(null);
+      const [error, setError] = R.useState<string | null>(null);
+      R.useEffect(() => {
+        let alive = true;
+        fetchJson<StatusPayload>(`${API}/status`)
+          .then((data) => {
+            if (alive) setStatus(data);
+          })
+          .catch((err) => {
+            if (!alive) return;
+            setError(String((err as Error)?.message ?? err));
+          });
+        return () => {
+          alive = false;
+        };
+      }, []);
+      if (error) return R.createElement('div', { style: styles.row }, `同步状态读取失败：${error}`);
+      if (!status) return R.createElement('div', { style: styles.row }, '加载中…');
+      const account = status.account?.paired ? `已配对 · ${status.account.hint ?? ''}` : '未登录官方账号';
+      const scheduler = status.scheduler ?? {};
+      const decision = scheduler.lastDecision;
+      const checkLabel = decision?.action && DECISION_LABELS[decision.action] ? DECISION_LABELS[decision.action] : '';
+      const rows = [
+        `账号：${account}`,
+        `版本：${status.version ?? '—'}`,
+        `服务地址：${status.baseUrl ?? '—'}`,
+        scheduler.lastCheckAt ? `上次检查：${fmtTime(scheduler.lastCheckAt)}${checkLabel ? `（${checkLabel}）` : ''}` : '上次检查：无',
+        decision?.action === 'skip' ? '结论：本机已是最新' : '结论：本机有改动或远端有更新',
+      ];
+      return R.createElement(
+        'div',
+        null,
+        ...rows.map((row) => R.createElement('div', { style: styles.row }, row)),
+        R.createElement('p', { style: styles.muted }, '上传与同步请到「设置 → 设置同步」操作。'),
+      );
+    }
+
     function apply(ctx: ClientContextLike) {
+      const reportSlot = (message: string) => {
+        void fetchJson(`${API}/client-log`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) }).catch(() => {});
+      };
       try {
+        // 设置面板（设置 → 设置同步）
         ctx.slots.inject('settings.section', () =>
-          ctx.slots.register(
-            {
-              name: 'settings.section',
-              id: 'user-sync',
-              order: 50,
-              label: '设置同步',
-            },
-            UserSyncSection,
-          ),
+          ctx.slots.register({ name: 'settings.section', id: 'user-sync', order: 50, label: '设置同步' }, UserSyncSection),
         );
+        // 插件详情页配置卡片（描述下方）：必须用 inject 等待槽声明，直接 register 会报 not declared
+        ctx.slots.inject('plugins.bundle.config', () => {
+          reportSlot('slot-injected plugins.bundle.config');
+          return ctx.slots.register(
+            { name: 'plugins.bundle.config', key: '@pandablessing/dsh-user-sync', inject: () => ({}) },
+            (ownerProps?: Record<string, unknown>) => {
+              if (ownerProps?.view === 'summary') return null;
+              reportSlot('render plugins.bundle.config');
+              return R.createElement(UserSyncStatusSection, {});
+            },
+          );
+        });
       } catch (error) {
-        // 面板注册失败只影响自己，不抛给 fiber，避免 web boot 失败。
         console.error('[dsh-user-sync] 面板注册失败', error);
       }
     }

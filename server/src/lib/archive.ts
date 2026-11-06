@@ -47,3 +47,9 @@ export function readManifest(buf: Buffer): Record<string, unknown> | null {
   if (!manifest) return null;
   return JSON.parse(manifest.data.toString('utf8'));
 }
+
+/** manifest 里的文件数量（用于拒绝空包）。 */
+export function manifestFileCount(manifest: Record<string, unknown> | null | undefined): number {
+  const files = manifest?.files;
+  return Array.isArray(files) ? files.length : 0;
+}

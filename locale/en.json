@@ -1,0 +1,14 @@
+{
+  "meta": {
+    "title": "User Sync",
+    "description": "Sync skills, plugin manifest, config and memory across machines. Update requires a DSH restart."
+  },
+  "nav": "User Sync",
+  "empty": "Sync the four user-level assets (skills / plugins / config / memory) across machines.",
+  "status": {
+    "title": "Status",
+    "dshHome": "DSH home",
+    "profile": "Profile",
+    "resolvedBy": "Path source"
+  }
+}

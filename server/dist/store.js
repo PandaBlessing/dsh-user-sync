@@ -73,7 +73,7 @@ export function createStore(dataDir) {
                     .filter((value) => Boolean(value))
                     .sort()
                     .pop() ?? null;
-                return { accountHint: accountKey.slice(0, 6), bytes, packages: items.length, updatedAt };
+                return { accountHint: accountKey.slice(0, 6), bytes, packages: items.length, updatedAt, createdAt: accounts[accountKey]?.createdAt ?? null };
             });
             largest.sort((a, b) => b.bytes - a.bytes);
             return {

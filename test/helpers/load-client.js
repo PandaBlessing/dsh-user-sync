@@ -11,7 +11,7 @@ export const PACKAGE_NAME = JSON.parse(readFileSync(join(root, 'package.json'), 
  * loaderImpl 可替换 loader，用于模拟重复注册等宿主行为。
  */
 export function loadClientBundle(ReactImpl, { loaderImpl } = {}) {
-  const source = readFileSync(join(root, 'lib', 'client.js'), 'utf8');
+  const source = readFileSync(join(root, 'client', 'client.js'), 'utf8');
   let exported;
   const fakeWindow = {
     __ModuleLoader__: loaderImpl ?? {

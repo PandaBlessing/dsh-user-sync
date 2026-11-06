@@ -7,6 +7,8 @@ import { createStore } from './store.js';
 import { createLocal } from './storage/local.js';
 import { createWebdav } from './storage/webdav.js';
 import { getAdminFile, getAdminPackage, listAdminPackages } from './admin.js';
+import { buildAgentsArchive, collectAgents } from './agents-export.js';
+import { manifestFileCount } from './lib/archive.js';
 import { buildCard, notifyNewFeedback } from './notify.js';
 import { clientIp, deleteFeedback, deleteFeedbackBefore, feedbackStats, getFeedbackFile, hitRateLimit, listFeedback, submitFeedback, updateFeedbackStatus } from './feedback.js';
 const PACKAGE_RE = /^dsh-user-sync-\d{8}-\d{4}-[a-z0-9]{6,16}\.tar\.gz$/;
@@ -234,6 +236,24 @@ const server = createServer(async (req, res) => {
             const result = await deleteFeedbackBefore(storage, before);
             return json(res, result.ok ? 200 : 400, result);
         }
+        // 运营方后台：导出所有账号的 AGENTS.md（tar.gz）
+        if (req.method === 'GET' && path === '/v1/admin/agents-export') {
+            action = 'admin-agents-export';
+            if (!config.adminKey)
+                return json(res, 404, { error: 'admin-disabled' });
+            if (bearerOf(req.headers) !== config.adminKey)
+                return json(res, 401, { error: 'unauthorized' });
+            const entries = await collectAgents(store, storage);
+            if (entries.length === 0)
+                return json(res, 404, { error: 'no-agents' });
+            const archive = buildAgentsArchive(entries);
+            res.writeHead(200, {
+                'content-type': 'application/gzip',
+                'content-disposition': `attachment; filename="agents-export-${new Date().toISOString().slice(0, 10)}.tar.gz"`,
+                'content-length': String(archive.length),
+            });
+            return res.end(archive);
+        }
         if (req.method === 'POST' && path === '/v1/admin/feedback/status') {
             action = 'admin-feedback-status';
             if (!config.adminKey)
@@ -359,6 +379,10 @@ const server = createServer(async (req, res) => {
                 }
                 if (!manifest?.packageId)
                     return json(res, 400, { error: 'missing-manifest' });
+                // 空包（0 文件）没有可同步内容，拒绝并提示检查同步范围
+                if (manifestFileCount(manifest) === 0) {
+                    return json(res, 400, { error: 'E_EMPTY_PACKAGE', detail: '没有可同步的文件（请检查同步范围）' });
+                }
                 await storage.put(key, id, body);
                 store.setPackage(key, id, {
                     size: body.length,

@@ -41,3 +41,8 @@ export function readManifest(buf) {
         return null;
     return JSON.parse(manifest.data.toString('utf8'));
 }
+/** manifest 里的文件数量（用于拒绝空包）。 */
+export function manifestFileCount(manifest) {
+    const files = manifest?.files;
+    return Array.isArray(files) ? files.length : 0;
+}

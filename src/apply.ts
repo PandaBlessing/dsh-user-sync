@@ -49,6 +49,8 @@ export function planApply({
   const seen = new Map<string, string>();
 
   for (const file of manifestFiles) {
+    // pnpm-lock.yaml 不同步（旧包可能仍带），直接跳过
+    if (file.path.toLowerCase().endsWith('/pnpm-lock.yaml')) continue;
     if (isUnsafeRelPath(file.path)) throw new Error(`非法包内路径: ${file.path}`);
     const lower = file.path.toLowerCase();
     if (seen.has(lower) && seen.get(lower) !== file.path) {

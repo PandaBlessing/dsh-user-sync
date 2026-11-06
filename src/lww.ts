@@ -91,14 +91,26 @@ export function compareTime(a: string | null | undefined, b: string | null | und
 }
 
 /** 本地是否相对上次应用有改动：新增、删除、内容变化都算。 */
+/**
+ * 判定时忽略的路径：
+ * - pnpm-lock.yaml：不同步，由本机 install 生成；
+ * - pnpm-workspace.yaml：插件启动时会自动追加 minimumReleaseAgeExclude，比较时忽略以免误报（同步仍保留，patchedDependencies 不丢）。
+ */
+function isExcludedSyncPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith('/pnpm-lock.yaml') || lower.endsWith('/pnpm-workspace.yaml');
+}
+
 export function detectLocalChanges(
   localFiles: Map<string, string> | undefined,
   appliedFiles: Map<string, string> | undefined,
 ): boolean {
   if (!localFiles || !appliedFiles) return false;
-  if (localFiles.size !== appliedFiles.size) return true;
-  for (const [path, sha] of localFiles) {
-    if (appliedFiles.get(path) !== sha) return true;
+  const local = new Map([...localFiles].filter(([path]) => !isExcludedSyncPath(path)));
+  const applied = new Map([...appliedFiles].filter(([path]) => !isExcludedSyncPath(path)));
+  if (local.size !== applied.size) return true;
+  for (const [path, sha] of local) {
+    if (applied.get(path) !== sha) return true;
   }
   return false;
 }

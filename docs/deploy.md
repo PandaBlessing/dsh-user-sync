@@ -6,7 +6,7 @@
 ## 1. 拓扑
 
 ```text
-插件（HTTPS） ──▶ nginx 443（dsh-user-sync-test.wenzhi.info）
+插件（HTTPS） ──▶ nginx 443（dsh-user-sync.wenzhi.info）
                      │
                      └─▶ 127.0.0.1:9301  node server/dist/index.js
                               │
@@ -21,9 +21,9 @@
 | 部署目录 | `/data/server/dsh-user-sync`（`app/` 代码、`data/` 元数据、`logs/`、`runtime/` Node） |
 | Node | `runtime/node/bin/node`（v22.11.0，官方 tar 解压，不依赖系统包） |
 | 监听 | `127.0.0.1:9301`（只被 nginx 反代，不直接对公网） |
-| 域名 | `dsh-user-sync-test.wenzhi.info`（证书复用 `/etc/nginx/ssl.key/fullchain.pem`，通配 `*.wenzhi.info`） |
+| 域名 | `dsh-user-sync.wenzhi.info`（证书复用 `/etc/nginx/ssl.key/fullchain.pem`，通配 `*.wenzhi.info`） |
 | systemd | `dsh-user-sync.service` |
-| nginx | `/etc/nginx/conf.d/dsh-user-sync-test.wenzhi.info.conf` |
+| nginx | `/etc/nginx/conf.d/dsh-user-sync.wenzhi.info.conf` |
 
 ## 3. 首次部署（已验证）
 
@@ -77,15 +77,15 @@ EOF
 systemctl daemon-reload && systemctl enable --now dsh-user-sync
 
 # 6) nginx（复用现有证书）
-cat > /etc/nginx/conf.d/dsh-user-sync-test.wenzhi.info.conf <<'EOF'
+cat > /etc/nginx/conf.d/dsh-user-sync.wenzhi.info.conf <<'EOF'
 server {
     listen 80;
-    server_name dsh-user-sync-test.wenzhi.info;
+    server_name dsh-user-sync.wenzhi.info;
     return 301 https://$host$request_uri;
 }
 server {
     listen 443 ssl;
-    server_name dsh-user-sync-test.wenzhi.info;
+    server_name dsh-user-sync.wenzhi.info;
     ssl_certificate     /etc/nginx/ssl.key/fullchain.pem;
     ssl_certificate_key /etc/nginx/ssl.key/certkey.pem;
     client_max_body_size 12m;
@@ -132,12 +132,12 @@ curl -s http://127.0.0.1:9301/v1/health
 |---|---|---|
 | `dsh-user-sync-test` | A | `82.157.127.207` |
 
-解析生效后，公网可直接访问 `https://dsh-user-sync-test.wenzhi.info/v1/health`。
+解析生效后，公网可直接访问 `https://dsh-user-sync.wenzhi.info/v1/health`。
 
 ## 6. 验证
 
 ```bash
-HOST=dsh-user-sync-test.wenzhi.info
+HOST=dsh-user-sync.wenzhi.info
 curl -kfsS --resolve $HOST:443:127.0.0.1 https://$HOST/v1/health
 ```
 
@@ -159,7 +159,7 @@ $C -X DELETE -H "authorization: Bearer $TOKEN" "https://$HOST/v1/me"
 设置 → 设置同步 → 直接上传（传输固定走运营方 API，服务地址内置）：
 
 ```text
-https://dsh-user-sync-test.wenzhi.info
+https://dsh-user-sync.wenzhi.info
 ```
 
 保存后插件会用官方账号 `accountKey` 自动配对（无需登录运营方账号）。

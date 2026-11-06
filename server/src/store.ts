@@ -90,7 +90,7 @@ export function createStore(dataDir: string) {
       accounts: number;
       uploaded: number;
       totalBytes: number;
-      largest: Array<{ accountHint: string; bytes: number; packages: number; updatedAt: string | null }>;
+      largest: Array<{ accountHint: string; bytes: number; packages: number; updatedAt: string | null; createdAt: string | null }>;
     } {
       const keys = Object.keys(accounts);
       const largest = keys.map((accountKey) => {
@@ -101,7 +101,7 @@ export function createStore(dataDir: string) {
           .filter((value): value is string => Boolean(value))
           .sort()
           .pop() ?? null;
-        return { accountHint: accountKey.slice(0, 6), bytes, packages: items.length, updatedAt };
+        return { accountHint: accountKey.slice(0, 6), bytes, packages: items.length, updatedAt, createdAt: accounts[accountKey]?.createdAt ?? null };
       });
       largest.sort((a, b) => b.bytes - a.bytes);
       return {

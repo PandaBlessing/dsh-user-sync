@@ -162,7 +162,7 @@
 - **控件**：面板「服务地址」行右侧小按钮，按当前地址显示「切到本地 / 切到远程」；
 - **接口**：`POST /api/dsh-user-sync/switch-env { target: 'local' | 'remote' }`，仅开发版可用（否则 403）；
   - local → `http://127.0.0.1:10001`
-  - remote → `DEFAULT_BASE_URL`（`https://dsh-user-sync-test.wenzhi.info`）
+  - remote → `DEFAULT_BASE_URL`（`https://dsh-user-sync.wenzhi.info`）
 - **生效**：写入 `state.baseUrl` 后立即生效（下一次检查/上传/反馈即走新地址），并提示切换结果；
 - **注意**：Panel 的 client bundle 变更仍需重启 DSH 才加载；host 路由变更热重载即可。
 

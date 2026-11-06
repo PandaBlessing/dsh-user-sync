@@ -3,6 +3,36 @@
 本文件记录设计文档与实现的可感知变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；首个实现发布前版本号保持 `0.x`。
 
 
+### 1.0.33（2026-11-06）
+
+- 技能同步范围扩展到 `~/.dsh/skills`（DSH 原生技能根），与 `~/.agents/skills` 同时扫描；同名技能以 `~/.dsh/skills` 为准。
+- 「同步范围」技能计数改为按技能目录数（一个技能含多个文件只算 1 个）。
+- 技能描述顺序调整为 `~/.dsh/skills 与 ~/.agents/skills`。
+
+### 1.0.32（2026-10-30）
+
+- 插件详情页配置卡片（`plugins.bundle.config`）：描述下方显示同步状态（账号/版本/服务地址/上次检查/结论）。
+- 新增 locale 别名与描述：`locale/zh.json` / `locale/en.json` 的 `meta.title`、`meta.description`（描述含「更新需重启 DSH」）。
+- 新增插件图标 `assets/icon-8.svg`（双设备同步）。
+- client 构建改为 tsdown（`client/client.js`，与 dshmarket 一致的 __ModuleLoader__ factory 产物）；`exports` 暴露 `./locale/*.json`、`client`、`assets`。
+- 新增 Python 脚本：`scripts/dev.py`（本地服务一键起停）、`verify.py`（构建+测试+接口）、`deploy.py`（腾讯云部署）、`publish.py`（npm 发布 + registry 验证）。
+
+### 1.0.31（2026-10-30）
+
+- 改动判定忽略 `pnpm-workspace.yaml` 的自动追加段（`minimumReleaseAgeExclude`），不再因插件自身写入误报「本机有更新」。
+- 手动「从远端同步」现在会记录检查时间与结论，面板检查后立即刷新，状态行不再停留旧结论。
+- 发布脚本改为 npm-cli 直发并在发布后验证 registry，修复一次发布两个版本的问题。
+
+### 1.0.30（2026-10-30）
+
+- 版本号调整：1.0.29 在 npm 上被暂存（staged）未确认，改用 1.0.30 发布（内容与 1.0.29 相同）。
+
+### 1.0.29（2026-10-30）
+
+- `pnpm-lock.yaml` 不再参与同步与改动判定（依赖按 `package.json` 清单装回，锁文件由本机 install 生成），修复安装依赖后误报「本机有更新」。
+- 修复「从远端同步」在 pull 判定下误显示「本地有更新」弹窗：pull/confirm 只弹覆盖确认，push 提示本地更新，skip 提示已是最新。
+- `engines.dsh` 改为只写下限 `>=0.2.0-rc.2`，修复预发布版本（如 0.2.1-rc.3）被 semver 规则排除导致「宿主要求未知」。
+
 ### 1.0.28（2026-10-29）
 
 - 发布版本号调整：1.0.27 在 npm 上处于 staged 未确认状态，改用 1.0.28 发布（内容与 1.0.27 相同）。

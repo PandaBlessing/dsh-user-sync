@@ -75,10 +75,10 @@ export function createMiniReact() {
 
   return {
     React,
-    mount(component) {
+    mount(component, props = {}) {
       let tree = null;
       schedule = () => {
-        tree = renderNode(React.createElement(component, {}));
+        tree = renderNode(React.createElement(component, props));
       };
       schedule();
       return {

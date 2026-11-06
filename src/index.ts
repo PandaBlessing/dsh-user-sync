@@ -24,16 +24,27 @@ import { installMissing, planPluginRecovery } from './plugins.ts';
 import { ALL_MODULES, scanAssets } from './scan.ts';
 import { createScheduler } from './scheduler.ts';
 import { loadState, saveState } from './state.ts';
+import Schema from '@deepseek-ai/schemastery';
+
 import { createSync } from './sync.ts';
 import { createApiTransport } from './transport/api.ts';
 import { createFolderTransport } from './transport/folder.ts';
 
 export const name = 'dsh-user-sync';
+
+export interface Config {
+  /** 是否在插件详情页显示同步状态（只读信息）。 */
+  showStatus: boolean;
+}
+
+export const Config = Schema.object({
+  showStatus: Schema.boolean().default(true),
+});
 /** 不硬依赖任何服务：依赖缺失时降级，不把条目停在 pending。 */
 export const inject: string[] = [];
 
 /** 内置服务地址（运营方 API）。用户可在 state.baseUrl 覆盖；这里必须是可用的正式地址。 */
-export const DEFAULT_BASE_URL = 'https://dsh-user-sync-test.wenzhi.info';
+export const DEFAULT_BASE_URL = 'https://dsh-user-sync.wenzhi.info';
 
 /** 开发版判定：环境变量 DSH_USER_SYNC_DEV=1，或插件以链接/开发目录安装（真实路径不在 node_modules 下）。 */
 export function isDevInstall(): boolean {
@@ -162,7 +173,7 @@ export function logPluginError(
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
-export function apply(ctx: CordisContextLike) {
+export function apply(ctx: CordisContextLike, config?: Config) {
   let logBase: string = process.env.DSH_HOME || join(homedir(), '.dsh');
   const log = (where: string, error: unknown): void => logPluginError(where, error, logBase);
   try {
@@ -178,8 +189,16 @@ export function apply(ctx: CordisContextLike) {
       const entry = `@pandablessing/dsh-user-sync@${PLUGIN_VERSION}`;
       try {
         const raw = readFileSync(yamlPath, 'utf8');
-        if (raw.includes(entry)) return;
-        const yamlLines = raw.split('\n');
+        // 先删掉本包的历史条目（旧版本、续行、损坏的 || 写法），统一成一条当前版本，避免重复追加把 YAML 写坏
+        const cleaned = raw
+          .split('\n')
+          .filter((line) => !/^\s*-\s*'@pandablessing\/dsh-user-sync@/.test(line) && !/^\s+\|\|/.test(line))
+          .join('\n');
+        if (cleaned.includes(entry)) {
+          if (cleaned !== raw) writeFileSync(yamlPath, cleaned, 'utf8');
+          return;
+        }
+        const yamlLines = cleaned.split('\n');
         const idx = yamlLines.findIndex((line) => /^minimumReleaseAgeExclude:/.test(line));
         if (idx >= 0) {
           let insert = idx + 1;
@@ -187,7 +206,7 @@ export function apply(ctx: CordisContextLike) {
           yamlLines.splice(insert, 0, `  - '${entry}'`);
           writeFileSync(yamlPath, yamlLines.join('\n'), 'utf8');
         } else {
-          writeFileSync(yamlPath, `${raw.trimEnd()}\nminimumReleaseAgeExclude:\n  - '${entry}'\n`, 'utf8');
+          writeFileSync(yamlPath, `${cleaned.trimEnd()}\nminimumReleaseAgeExclude:\n  - '${entry}'\n`, 'utf8');
         }
       } catch {
         // 没有 pnpm-workspace.yaml 时忽略
@@ -198,6 +217,12 @@ export function apply(ctx: CordisContextLike) {
     logBase = paths.dshHome;
 
     const statePath = join(paths.dshHome, 'user-sync', 'state.json');
+    // 详细日志：记录 DSH 是否把 Config（schema 默认值）传给插件
+    try {
+      appendFileSync(statePath + '.config.log', new Date().toISOString() + ' apply config=' + JSON.stringify(config ?? null) + '\n');
+    } catch {
+      // 日志失败不影响插件
+    }
     const authPath = join(paths.dshHome, 'user-sync', 'auth.json');
     const folderDir = join(paths.dshHome, 'user-sync', 'remote');
 
@@ -243,6 +268,14 @@ export function apply(ctx: CordisContextLike) {
       });
       const counts: Record<string, number> = {};
       for (const entry of entries) counts[entry.module] = (counts[entry.module] ?? 0) + 1;
+    // 技能模块按「技能目录数」计数（一个技能含多个文件也只算 1 个），与 UI 展示语义一致
+    const skillNames = new Set(
+      entries
+        .filter((entry) => entry.module === 'skills')
+        .map((entry) => entry.path.split('/')[1])
+        .filter((name) => Boolean(name)),
+    );
+    if (skillNames.size > 0) counts.skills = skillNames.size;
       // 插件清单模块展示「装了什么插件」：直接读 profile 的 package.json dependencies
       let plugins: Array<{ name: string; spec: string }> = [];
       try {
@@ -523,6 +556,21 @@ export function apply(ctx: CordisContextLike) {
       },
       {
         // 开发版：在本地服务端与远程服务端之间切换（仅 DSH_USER_SYNC_DEV=1 时可用）
+        // 调试：client 侧注册错误写到文件，便于 agent 自动诊断
+        path: '/api/dsh-user-sync/client-log',
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request: Request) => {
+          try {
+            const body = (await request.json()) as { message?: string };
+            appendFileSync(statePath + '.client.log', new Date().toISOString() + ' ' + String(body?.message ?? '') + '\n');
+          } catch {
+            // 日志失败不影响面板
+          }
+          return json({ ok: true });
+        },
+      },
+      {
         path: '/api/dsh-user-sync/switch-env',
         methods: ['POST'],
         requestBody: 'buffered',
@@ -536,6 +584,21 @@ export function apply(ctx: CordisContextLike) {
           const state = loadState(statePath);
           state.baseUrl = next;
           saveState(statePath, state);
+          // 切换服务端后 token 不通用：用官方账号的 accountKey 在该服务端重新登录（失败只记日志）
+          try {
+            const account = ctx.get?.('deepseekAccount') as DeepseekAccountLike | undefined;
+            if (!account) throw new Error('no-account-service');
+            const profile = await account.getProfile({ version: PLUGIN_VERSION, locale: 'zh-CN', timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 });
+            const accountId = profile?.status === 'ready' ? profile.value?.id : null;
+            if (accountId) {
+              const api = createApiTransport({ baseUrl: next, authPath });
+              await api.register(deriveAccountKey(accountId) as string);
+            }
+          } catch (error) {
+            log('switch-relogin', error);
+          }
+          // 切换后立即重建 transport：否则上传/检查仍走切换前的服务端
+          sync.setTransport(buildTransport());
           return json({ ok: true, baseUrl: next });
         },
       },
@@ -794,6 +857,20 @@ export function apply(ctx: CordisContextLike) {
         requestBody: 'buffered',
         fetch: async () => {
           const result = (await sync.check()) as CheckPayload;
+          // 手动检查也记录到状态（状态行「上次检查」与定时检查一致）
+          try {
+            const checkState = loadState(statePath);
+            checkState.lastCheckAt = new Date().toISOString();
+            checkState.lastDecision = {
+              action: result.decision?.action ?? null,
+              reason: result.decision?.reason ?? null,
+              packageId: result.latest?.name ?? null,
+              createdAt: result.meta?.createdAt ?? null,
+            };
+            saveState(statePath, checkState);
+          } catch {
+            // 记录失败不影响检查结果
+          }
           if (pluginManager && result.meta?.dependencies) {
             try {
               const bundles = await pluginManager.listBundles();

@@ -322,7 +322,7 @@ test('UI-23 真实宿主响应形状下显示模块计数', async () => {
           consent: { acceptedAt: '2026-10-23T14:24:00.000Z' },
           transport: 'api',
           transportSetting: 'api',
-          baseUrl: 'https://dsh-user-sync-test.wenzhi.info',
+          baseUrl: 'https://dsh-user-sync.wenzhi.info',
           scheduler: {},
           probe: { totalFiles: 11, counts: { config: 2, plugins: 4, sessions: 5 }, errors: 0 },
         });
@@ -407,7 +407,7 @@ test('UI-30 远端更新时上传被拦下，确认后才带 force 覆盖', asyn
           consent: { acceptedAt: '2026-10-23T10:00:00Z' },
           transport: 'api',
           transportSetting: 'api',
-          baseUrl: 'https://dsh-user-sync-test.wenzhi.info',
+          baseUrl: 'https://dsh-user-sync.wenzhi.info',
           baseUrlSource: 'default',
           scheduler: {},
         });
@@ -435,7 +435,7 @@ test('UI-30 远端更新时上传被拦下，确认后才带 force 覆盖', asyn
 
   // 面板只读显示生效中的服务地址
   assert.match(view.text(), /服务地址/);
-  assert.match(view.text(), /https:\/\/dsh-user-sync-test\.wenzhi\.info（内置）/);
+  assert.match(view.text(), /https:\/\/dsh-user-sync\.wenzhi\.info（内置）/);
 
   view.button('上传用户配置').props.onClick();
   await flush();
