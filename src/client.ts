@@ -448,7 +448,7 @@ if (typeof window !== 'undefined') {
       // 当前进行中的动作（上传/同步），用于按钮文案
       const [busyAction, setBusyAction] = R.useState<'upload' | 'pull' | null>(null);
       // 操作结果弹窗（上传/同步完成后弹出）
-      const [resultDialog, setResultDialog] = R.useState<{ title: string; detail: string; error?: boolean } | null>(null);
+      const [resultDialog, setResultDialog] = R.useState<{ title: string; detail: string; error?: boolean; forceApply?: string } | null>(null);
 
       // 一键更新：调宿主 /update（走 DSH 官方安装器），成功后提示重启
       const updatePlugin = async () => {
@@ -704,10 +704,10 @@ if (typeof window !== 'undefined') {
               setOverwriteDialog({
                 kind: 'pull',
                 name: result.latest.name,
-                detail: `远端包 ${result.latest.name}（${result.meta?.createdAt ?? '时间未知'}），将覆盖本机 ${overwritten} 个文件。`,
+                detail: `远端包 ${result.latest.name}（${fmtTime(result.meta?.createdAt) ?? '时间未知'}），将覆盖本机 ${overwritten} 个文件。`,
               });
             } else if (action === 'push') {
-              setResultDialog({ title: '检查完成', detail: '本地有更新，可上传到远端（或用「上传用户配置」覆盖远端）。' });
+              setResultDialog({ title: '检查完成', detail: '本地有更新，可上传到远端（或用「上传用户配置」覆盖远端），也可「强制覆盖」从远端拉取。', forceApply: result.latest?.name });
             } else {
               setResultDialog({ title: '检查完成', detail: result.detail ?? '已是最新' });
             }
@@ -1065,7 +1065,21 @@ if (typeof window !== 'undefined') {
                 R.createElement(
                   'div',
                   { style: styles.actions },
-                  R.createElement('button', { style: styles.primary, onClick: () => setResultDialog(null) }, '知道了'),
+                  resultDialog.forceApply
+                    ? R.createElement(
+                        'button',
+                        {
+                          style: styles.primary,
+                          onClick: () => {
+                            const name = resultDialog.forceApply as string;
+                            setResultDialog(null);
+                            void applyRemote(name);
+                          },
+                        },
+                        '强制覆盖',
+                      )
+                    : null,
+                  R.createElement('button', { style: styles.secondary, onClick: () => setResultDialog(null) }, '知道了'),
                 ),
               ),
             )

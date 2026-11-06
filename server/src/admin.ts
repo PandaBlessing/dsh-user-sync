@@ -21,7 +21,7 @@ export interface AdminPackageSummary {
 
 /** 按包内路径归类到同步模块（与插件端扫描口径一致）。 */
 function classify(path: string): string {
-  if (path.startsWith('skills/')) return 'skills';
+  if (path.startsWith('skills/') || path.startsWith('dsh-skills/')) return 'skills';
   if (path === 'AGENTS.md' || path.startsWith('memories/')) return 'userMemory';
   if (path === 'profiles/' || path.startsWith('profiles/')) {
     if (path.endsWith('cordis.patch.yml')) return 'config';

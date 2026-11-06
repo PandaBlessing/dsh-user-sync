@@ -648,11 +648,12 @@ if (typeof window !== "undefined") {
 									setOverwriteDialog({
 										kind: "pull",
 										name: result.latest.name,
-										detail: `远端包 ${result.latest.name}（${result.meta?.createdAt ?? "时间未知"}），将覆盖本机 ${overwritten} 个文件。`
+										detail: `远端包 ${result.latest.name}（${fmtTime(result.meta?.createdAt) ?? "时间未知"}），将覆盖本机 ${overwritten} 个文件。`
 									});
 								} else if (action === "push") setResultDialog({
 									title: "检查完成",
-									detail: "本地有更新，可上传到远端（或用「上传用户配置」覆盖远端）。"
+									detail: "本地有更新，可上传到远端（或用「上传用户配置」覆盖远端），也可「强制覆盖」从远端拉取。",
+									forceApply: result.latest?.name
 								});
 								else setResultDialog({
 									title: "检查完成",
@@ -855,8 +856,15 @@ if (typeof window !== "undefined") {
 					}, R.createElement("div", {
 						style: styles.dialog,
 						onClick: (event) => event.stopPropagation?.()
-					}, R.createElement("strong", { style: resultDialog.error ? styles.warn : void 0 }, resultDialog.title), R.createElement("p", { style: styles.muted }, resultDialog.detail), R.createElement("div", { style: styles.actions }, R.createElement("button", {
+					}, R.createElement("strong", { style: resultDialog.error ? styles.warn : void 0 }, resultDialog.title), R.createElement("p", { style: styles.muted }, resultDialog.detail), R.createElement("div", { style: styles.actions }, resultDialog.forceApply ? R.createElement("button", {
 						style: styles.primary,
+						onClick: () => {
+							const name = resultDialog.forceApply;
+							setResultDialog(null);
+							applyRemote(name);
+						}
+					}, "强制覆盖") : null, R.createElement("button", {
+						style: styles.secondary,
 						onClick: () => setResultDialog(null)
 					}, "知道了")))) : null, feedbackOpen ? R.createElement("div", {
 						style: styles.overlay,

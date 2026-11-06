@@ -129,9 +129,10 @@ export function createSync({
     return join(paths.preRestoreBase, `pre-restore-${stamp}`);
   }
 
-  /** 包内路径 → 绝对路径：skills/ 落到 userHome，其余落到 dshHome。 */
+  /** 包内路径 → 绝对路径：skills/ 落到 userHome 的 agents 技能根，dsh-skills/ 落到 dshHome 的技能根，其余落到 dshHome。 */
   const resolveTarget = (rel: string): string => {
     if (rel.startsWith('skills/')) return join(userHome, '.agents', 'skills', rel.slice('skills/'.length));
+    if (rel.startsWith('dsh-skills/')) return join(dshHome, 'skills', rel.slice('dsh-skills/'.length));
     return join(dshHome, rel);
   };
 

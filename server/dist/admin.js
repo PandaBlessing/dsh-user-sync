@@ -1,7 +1,7 @@
 import { parseTarGz, MANIFEST_PATH } from './lib/archive.js';
 /** 按包内路径归类到同步模块（与插件端扫描口径一致）。 */
 function classify(path) {
-    if (path.startsWith('skills/'))
+    if (path.startsWith('skills/') || path.startsWith('dsh-skills/'))
         return 'skills';
     if (path === 'AGENTS.md' || path.startsWith('memories/'))
         return 'userMemory';
