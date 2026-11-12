@@ -250,6 +250,51 @@
 |---|---|---|---|---|---|
 | SMOKE-01 | P0 | 真实 DSH 里插件路由已注册 | `/api/dsh-user-sync/status` 与 `/scan` 返回 200/401（非 404） | §10.3 | 脚本（`scripts/smoke.ps1`） |
 
+### 3.16 pnpm 白名单净化 PNPM
+
+> 背景：pnpm 安装仍在等待期的精确版本时会写 `minimumReleaseAgeExclude`，卸载插件不回写，
+> 同步整文件会把孤儿条目带到其他机器。实现见 `src/pnpm.ts`，接入点 `src/sync.ts` 的 `pack()` 与 `applyRemote()`。
+> 设计依据：`docs/updates.md` 1.0.35「同步净化 pnpm 白名单」。
+
+| ID | 级别 | 用例 | 预期 | 设计 | 方式 |
+|---|---|---|---|---|---|
+| PNPM-01 | P0 | 解析 `dshmarket@1.73.22` | 返回 `dshmarket` | §sync/pnpm | 单测 |
+| PNPM-02 | P0 | 解析 `@pandablessing/dsh-user-sync@1.0.34` | 返回 `@pandablessing/dsh-user-sync` | §sync/pnpm | 单测 |
+| PNPM-03 | P1 | 解析 `dshmarket@1.73.12 \|\| 1.73.18` | 返回 `dshmarket`（取首段） | §sync/pnpm | 单测 |
+| PNPM-04 | P1 | 解析带去引号 / 行尾注释的条目；空串与纯空白 | 返回去掉引号与注释后的包名；空串与纯空白返回 `null` | §sync/pnpm | 单测 |
+| PNPM-05 | P0 | 上传打包：条目包名不在 `package.json dependencies` | 该行不进包；manifest `sha256` 等于净化后内容的哈希 | §sync/pnpm | 单测 |
+| PNPM-06 | P0 | 上传打包：条目包名仍在 dependencies | 该行保留（含 `@scope/name` 与 `||` 写法） | §sync/pnpm | 单测 |
+| PNPM-07 | P1 | 上传打包：`allowBuilds`、`patchedDependencies` 等其他段 | 原样保留，字节不变 | §sync/pnpm | 单测 |
+| PNPM-08 | P1 | 边界：`dependencies` 为空对象 | 保守不净化，文本原样返回 | §sync/pnpm | 单测 |
+| PNPM-09 | P1 | 边界：段内条目全部被删 | key 行改写为 `minimumReleaseAgeExclude: []` | §sync/pnpm | 单测 |
+| PNPM-10 | P1 | 边界：段在文件末尾（后面没有其他 key） | 同样改写为 `minimumReleaseAgeExclude: []` | §sync/pnpm | 单测 |
+| PNPM-11 | P0 | 边界：CRLF 换行的 workspace 文件 | 仍能识别条目；保留的 CRLF 不被改动 | §sync/pnpm | 单测 |
+| PNPM-12 | P0 | 应用旧脏包：包内 workspace 含孤儿条目 | 写入本地的文件不含孤儿条目；仍依赖的条目保留 | §sync/pnpm | 单测 |
+| PNPM-13 | P0 | 应用后 `state.files` 的哈希 | 等于净化后实际写入磁盘内容的 `sha256`（不是原包哈希） | §sync/pnpm | 单测 |
+| PNPM-14 | P0 | 异常：包内没有 `profiles/*/package.json` | 无法判定依赖，不净化，按原包内容应用并正常返回 | §sync/pnpm | 单测 |
+
+### 3.17 同步后插件对齐 PLUGINSYNC
+
+> 背景：同步应用后需要静默安装缺失插件、更新落后版本、移除「上次同步管理过、本次远端包不再声明」的插件，
+> 并让变更及时生效（宿主发布新 release 后刷新页面，不重启 DSH 进程）。
+> 实现：`src/plugins-sync.ts`（计划）+ `src/index.ts` 的 `syncManagedPlugins`（执行）+ `src/client.ts` 的自动刷新。
+
+| ID | 级别 | 用例 | 预期 | 设计 | 方式 |
+|---|---|---|---|---|---|
+| PSYNC-01 | P0 | 远端包声明一个本机缺失的插件 | `install` 含该包（`reason=missing`），装完后 `installed.ok=true` | §7.8 | 单测 |
+| PSYNC-02 | P0 | 已装版本满足 `^x.y.z` 声明 | 不重装，`install` 为空 | §7.8 | 单测 |
+| PSYNC-03 | P0 | 已装版本低于声明基线 | 标记 `outdated` 并安装，`updated` 含包名 | §7.8 | 单测 |
+| PSYNC-04 | P1 | `link:` / `file:` 本地依赖 | 只进 `linkDeps`，不安装、不纳入 managed、不移除 | §7.8 | 单测 |
+| PSYNC-05 | P0 | 上次同步管理过、本次远端包不再声明 | `remove` 含该包；走 `removeBundle` 后从 `node_modules` 消失 | §7.8 | 单测 |
+| PSYNC-06 | P0 | 首次同步（state 无 `managedPlugins`） | 不执行移除，避免误删本地手动安装的插件 | §7.8 | 单测 |
+| PSYNC-07 | P1 | 历史管理记录里含本地链接依赖 | 不移除 | §7.8 | 单测 |
+| PSYNC-08 | P1 | 声明无法解析版本（如 `latest`） | 不判定落后、不重装 | §7.8 | 单测 |
+| PSYNC-09 | P0 | 应用后插件有增删改 | 接口返回 `reloadRequired=true` | §7.8 | 单测 / 联调 |
+| PSYNC-10 | P0 | 应用后插件无变化 | `reloadRequired=false`，不刷新页面 | §7.8 | 单测 / 联调 |
+| PSYNC-11 | P1 | 宿主不提供 `removeBundle` | 跳过移除并在 `skipped` 中列出，不报错 | §7.8 | 单测 |
+| PSYNC-12 | P1 | 面板收到 `reloadRequired` | 短暂提示后 `location.reload()`，新插件生效（不重启 DSH） | §7.8 | 手测 |
+| PSYNC-13 | P2 | `installBundle` 失败 | 单个失败不阻塞其余，`installed.error` 有信息 | §7.8 | 单测 |
+
 ---
 
 ## 4. 统计
@@ -271,4 +316,6 @@
 | BOUND | 4 | 2 |
 | E2E | 7 | 5 |
 | SMOKE | 1 | 1 |
-| **合计** | **137** | **67** |
+| PNPM | 14 | 8 |
+| PLUGINSYNC | 13 | 7 |
+| **合计** | **164** | **82** |

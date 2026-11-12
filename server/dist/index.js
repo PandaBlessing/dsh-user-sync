@@ -6,7 +6,7 @@ import { readManifest } from './lib/archive.js';
 import { createStore } from './store.js';
 import { createLocal } from './storage/local.js';
 import { createWebdav } from './storage/webdav.js';
-import { getAdminFile, getAdminPackage, listAdminPackages } from './admin.js';
+import { buildAccountZip, getAdminFile, getAdminPackage, invalidateAdminCache, listAdminPackages, listPluginStats } from './admin.js';
 import { buildAgentsArchive, collectAgents } from './agents-export.js';
 import { manifestFileCount } from './lib/archive.js';
 import { buildCard, notifyNewFeedback } from './notify.js';
@@ -35,6 +35,19 @@ const readBody = (req) => new Promise((resolve) => {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => resolve(Buffer.concat(chunks)));
 });
+/**
+ * 解析分页参数：非法值回退默认值，不报错（用例 TC-I04）。
+ * limit=0 表示全量，保留该语义；负值或非数字回退 defaultLimit。
+ */
+function pageParams(url, defaultLimit) {
+    const limitRaw = url.searchParams.get('limit');
+    const offsetRaw = url.searchParams.get('offset');
+    const parsedLimit = limitRaw === null ? NaN : Number.parseInt(limitRaw, 10);
+    const parsedOffset = offsetRaw === null ? NaN : Number.parseInt(offsetRaw, 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : defaultLimit;
+    const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? parsedOffset : 0;
+    return { limit, offset };
+}
 function accountOf(req) {
     const token = bearerOf(req.headers);
     if (!token)
@@ -135,7 +148,11 @@ const server = createServer(async (req, res) => {
                 accounts: usage.accounts,
                 uploaded: usage.uploaded,
                 totalBytes: usage.totalBytes,
+                totalUploads: usage.totalUploads,
+                totalDownloads: usage.totalDownloads,
                 largest: usage.largest,
+                // 全量账号统计明细：dsh-admin 定时同步进 MySQL 用
+                accountStats: store.listAccountStats(),
                 webdav: Boolean(config.webdav),
             });
         }
@@ -146,7 +163,60 @@ const server = createServer(async (req, res) => {
                 return json(res, 404, { error: 'admin-disabled' });
             if (bearerOf(req.headers) !== config.adminKey)
                 return json(res, 401, { error: 'unauthorized' });
-            return json(res, 200, await listAdminPackages(store, storage));
+            // 非法分页参数回退默认值，不报错（见 docs/test-cases-admin-stats.md TC-I04）
+            const { limit, offset } = pageParams(url, 50);
+            const sort = url.searchParams.get('sort') ?? 'createdAt_desc';
+            return json(res, 200, await listAdminPackages(store, storage, { limit, offset, sort }));
+        }
+        // 运营方后台：删除某账号的同步包（保留账号与历史统计；账号需重新上传才有包）
+        if (req.method === 'DELETE' && path === '/v1/admin/packages') {
+            action = 'admin-package-delete';
+            if (!config.adminKey)
+                return json(res, 404, { error: 'admin-disabled' });
+            if (bearerOf(req.headers) !== config.adminKey)
+                return json(res, 401, { error: 'unauthorized' });
+            const target = url.searchParams.get('account') ?? '';
+            if (!target)
+                return json(res, 400, { error: 'missing-account' });
+            let removed = 0;
+            for (const item of store.listPackages(target)) {
+                await storage.remove(target, item.id).catch(() => { });
+                store.removePackage(target, item.id);
+                removed += 1;
+            }
+            invalidateAdminCache(target);
+            return json(res, 200, { ok: true, removed });
+        }
+        // 运营方后台：插件统计排行（引用账号数）
+        if (req.method === 'GET' && path === '/v1/admin/plugin-stats') {
+            action = 'admin-plugin-stats';
+            if (!config.adminKey)
+                return json(res, 404, { error: 'admin-disabled' });
+            if (bearerOf(req.headers) !== config.adminKey)
+                return json(res, 401, { error: 'unauthorized' });
+            const { limit, offset } = pageParams(url, 100);
+            const sort = url.searchParams.get('sort') ?? 'accounts_desc';
+            return json(res, 200, await listPluginStats(store, storage, { limit, offset, sort }));
+        }
+        // 运营方后台：把某账号最新包下载为 zip
+        const zipMatch = path.match(/^\/v1\/admin\/packages\/([^/]+)\/download$/);
+        if (zipMatch && req.method === 'GET') {
+            action = 'admin-package-zip';
+            if (!config.adminKey)
+                return json(res, 404, { error: 'admin-disabled' });
+            if (bearerOf(req.headers) !== config.adminKey)
+                return json(res, 401, { error: 'unauthorized' });
+            const target = decodeURIComponent(zipMatch[1]);
+            const result = await buildAccountZip(store, storage, target);
+            if (!result.ok)
+                return json(res, 404, { ok: false, error: 'no-package', detail: result.detail });
+            res.writeHead(200, {
+                'content-type': 'application/zip',
+                'content-disposition': `attachment; filename="${result.filename}"`,
+                'content-length': String(result.data.length),
+                'cache-control': 'no-store',
+            });
+            return res.end(result.data);
         }
         if (req.method === 'GET' && path === '/v1/admin/package') {
             action = 'admin-package';
@@ -360,6 +430,10 @@ const server = createServer(async (req, res) => {
                 const data = await storage.get(key, id);
                 if (!data)
                     return json(res, 404, { error: 'not-found' });
+                // 只有客户端发起的下载才计入统计（后台/代理下载不带该头）
+                if (req.headers['x-dsh-sync-client']) {
+                    store.recordDownload(key);
+                }
                 res.writeHead(200, { 'content-type': 'application/octet-stream' });
                 return res.end(data);
             }
@@ -389,6 +463,9 @@ const server = createServer(async (req, res) => {
                     createdAt: new Date().toISOString(),
                     manifest: manifest,
                 });
+                // 上传成功计数（运营统计）并让摘要缓存失效
+                store.recordUpload(key);
+                invalidateAdminCache(key);
                 // 设计约定「远端只保留 1 份」：新包写入后删除该账号的旧包
                 for (const item of store.listPackages(key)) {
                     if (item.id === id)

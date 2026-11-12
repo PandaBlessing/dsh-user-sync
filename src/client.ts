@@ -73,6 +73,10 @@ interface CheckPayload {
   hits?: Array<{ file: string; line: number; pattern: string }>;
   installed?: Array<{ name: string; ok: boolean; error?: string }>;
   linkDeps?: Array<{ name: string; spec: string }>;
+  /** 本次同步安装/更新/移除的插件；changed 时宿主已发布新 release，页面刷新即生效。 */
+  updated?: string[];
+  removed?: string[];
+  reloadRequired?: boolean;
   installError?: string;
   warning?: string[];
   modules?: string[];
@@ -248,9 +252,15 @@ if (typeof window !== 'undefined') {
       },
     };
 
-    async function fetchJson<T = Record<string, unknown>>(url: string, options: RequestInit = {}): Promise<T> {
-      // no-store：GET 结果可能被渲染进程缓存，导致「刚写入的状态读回旧值」
-      const response = await fetch(url, { cache: 'no-store', ...options });
+    async function fetchJson<T = Record<string, unknown>>(
+      url: string,
+      options: RequestInit & { timeoutMs?: number } = {},
+    ): Promise<T> {
+      // no-store：GET 结果可能被渲染进程缓存，导致「刚写入的状态读回旧值」；
+      // 默认 30s 超时：宿主卡住时不让界面永远停在「同步进行中」；
+      // 上传/应用会打包与安装插件，耗时更长，调用方显式传 timeoutMs。
+      const { timeoutMs = 30_000, ...init } = options;
+      const response = await fetch(url, { cache: 'no-store', ...init, signal: AbortSignal.timeout(timeoutMs) });
       const text = await response.text();
       try {
         return JSON.parse(text) as T;
@@ -447,6 +457,21 @@ if (typeof window !== 'undefined') {
       };
       // 当前进行中的动作（上传/同步），用于按钮文案
       const [busyAction, setBusyAction] = R.useState<'upload' | 'pull' | null>(null);
+      // 上传/同步遮罩：进行中阻塞界面；超过保底时间后允许手动关闭，避免异常时卡死界面
+      const OVERLAY_DISMISS_AFTER_SECONDS = 60;
+      const [overlayElapsed, setOverlayElapsed] = R.useState<number>(0);
+      const [overlayDismissed, setOverlayDismissed] = R.useState<boolean>(false);
+      // effect 只负责计时；重置动作放在每个操作开始时，避免 effect 内同步 setState
+      R.useEffect(() => {
+        if (!busyAction) return undefined;
+        const started = Date.now();
+        const timer = setInterval(() => setOverlayElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+        return () => clearInterval(timer);
+      }, [busyAction]);
+      const beginOverlay = () => {
+        setOverlayElapsed(0);
+        setOverlayDismissed(false);
+      };
       // 操作结果弹窗（上传/同步完成后弹出）
       const [resultDialog, setResultDialog] = R.useState<{ title: string; detail: string; error?: boolean; forceApply?: string } | null>(null);
 
@@ -645,6 +670,7 @@ if (typeof window !== 'undefined') {
 
       /** force=true 表示用户已确认「用本机覆盖远端」（远端更新时才需要）。 */
       const upload = async (force = false) => {
+        beginOverlay();
         setBusy(true);
         setBusyAction('upload');
         setNotice(null);
@@ -653,6 +679,8 @@ if (typeof window !== 'undefined') {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ force }),
+            // 打包 + 上传可能耗时较长，给足超时；遮罩另有 60s 保底可手动关闭
+            timeoutMs: 300_000,
           });
           if (result.ok) {
             setResultDialog({ title: '上传完成', detail: result.detail ?? '已上传到远端' });
@@ -689,6 +717,7 @@ if (typeof window !== 'undefined') {
 
 
       const checkRemote = async () => {
+        beginOverlay();
         setBusy(true);
         setBusyAction('pull');
         setNotice(null);
@@ -723,6 +752,7 @@ if (typeof window !== 'undefined') {
 
       const applyRemote = async (name: string) => {
         if (!name) return;
+        beginOverlay();
         setBusy(true);
         setBusyAction('pull');
         try {
@@ -730,8 +760,22 @@ if (typeof window !== 'undefined') {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ name }),
+            // 应用后可能还要装/更新插件，耗时较长
+            timeoutMs: 300_000,
           });
-          setResultDialog({ title: result.ok ? '同步完成' : '同步失败', error: !result.ok, detail: result.detail ?? (result.ok ? '已从远端同步到本机' : '同步失败') });
+          if (result.ok && result.reloadRequired) {
+            // 插件有增删改：宿主已发布新 release，短暂提示后自动刷新页面，新插件即时生效（不重启 DSH）
+            setResultDialog({ title: '同步完成', detail: '插件已按远端更新，正在刷新…' });
+            globalThis.setTimeout(() => {
+              try {
+                globalThis.location.reload();
+              } catch {
+                // 非浏览器环境忽略
+              }
+            }, 900);
+          } else {
+            setResultDialog({ title: result.ok ? '同步完成' : '同步失败', error: !result.ok, detail: result.detail ?? (result.ok ? '已从远端同步到本机' : '同步失败') });
+          }
           refresh();
         } catch (error) {
           setResultDialog({ title: '同步失败', detail: String(error), error: true });
@@ -1121,6 +1165,31 @@ if (typeof window !== 'undefined') {
                 R.createElement('strong', null, feedbackResult.ok ? '提交成功' : '提交失败'),
                 R.createElement('p', { style: styles.muted }, feedbackResult.message),
                 R.createElement('div', { style: styles.actions }, R.createElement('button', { style: styles.primary, onClick: () => setFeedbackResult(null) }, '知道了')),
+              ),
+            )
+          : null,
+        busyAction && !overlayDismissed
+          ? R.createElement(
+              'div',
+              { style: styles.overlay },
+              R.createElement(
+                'div',
+                { style: styles.dialog },
+                R.createElement('strong', null, busyAction === 'upload' ? '正在上传用户配置…' : '正在从远端同步…'),
+                R.createElement(
+                  'p',
+                  { style: styles.muted },
+                  overlayElapsed < OVERLAY_DISMISS_AFTER_SECONDS
+                    ? `已用 ${overlayElapsed}s，完成前请勿关闭页面。`
+                    : `已超过 ${OVERLAY_DISMISS_AFTER_SECONDS}s，操作仍在后台执行；可关闭弹窗先做别的。`,
+                ),
+                R.createElement(
+                  'div',
+                  { style: styles.actions },
+                  overlayElapsed < OVERLAY_DISMISS_AFTER_SECONDS
+                    ? R.createElement('button', { style: styles.secondary, disabled: true }, `请稍候（${overlayElapsed}s）`)
+                    : R.createElement('button', { style: styles.primary, onClick: () => setOverlayDismissed(true) }, '关闭弹窗'),
+                ),
               ),
             )
           : null,

@@ -21,6 +21,7 @@ import type {
 } from './host.ts';
 import { resolvePaths } from './paths.ts';
 import { installMissing, planPluginRecovery } from './plugins.ts';
+import { planPluginSync } from './plugins-sync.ts';
 import { ALL_MODULES, scanAssets } from './scan.ts';
 import { createScheduler } from './scheduler.ts';
 import { loadState, saveState } from './state.ts';
@@ -437,37 +438,80 @@ export function apply(ctx: CordisContextLike, config?: Config) {
       }
     };
 
-    /** 把远端包声明的依赖装上：先按 package.json 整体安装，再逐个 installBundle 兜底，link/file 依赖只提示手动处理。 */
-    const ensurePluginsInstalled = async (
+    /** 读已装插件版本（读不到返回 null）。 */
+    const readInstalledVersion = (name: string): string | null => {
+      try {
+        const pkg = JSON.parse(readFileSync(join(paths.profileDir, 'node_modules', name, 'package.json'), 'utf8')) as { version?: string };
+        return typeof pkg.version === 'string' ? pkg.version : null;
+      } catch {
+        return null;
+      }
+    };
+
+    /**
+     * 把远端包声明的依赖对齐到本机：缺失 → 安装，版本落后 → 更新，上次同步管理过、这次不再声明 → 移除。
+     * 安装/移除都走宿主 pluginManager，宿主会据此发布新 release；返回 changed=true 时由面板刷新页面即时生效。
+     */
+    const syncManagedPlugins = async (
       pm: PluginManagerLike,
       dependencies: Record<string, unknown>,
-    ): Promise<{ installed: Array<{ name: string; ok: boolean; error?: string }>; linkDeps: Array<{ name: string; spec: string }> }> => {
-      const plan = planPluginRecovery({ dependencies, installed: [] });
-      let removedLinks: string[] = [];
-      try {
-        const result = await installProfileDependencies();
-        removedLinks = result.removedLinks;
-      } catch (error) {
-        log('install-dependencies', error);
+    ): Promise<{
+      installed: Array<{ name: string; ok: boolean; error?: string }>;
+      updated: string[];
+      removed: string[];
+      skipped: string[];
+      linkDeps: Array<{ name: string; spec: string }>;
+      changed: boolean;
+    }> => {
+      const state = loadState(statePath);
+      const managed = Array.isArray(state.managedPlugins) ? (state.managedPlugins as string[]) : null;
+      const installedVersions: Record<string, string> = {};
+      for (const name of Object.keys(dependencies)) {
+        const version = readInstalledVersion(name);
+        if (version) installedVersions[name] = version;
       }
-      // 安装后重新判定：DSH 的 listBundles 只要声明在就算 installed，实际落盘要看 node_modules
-      const bundles = await pm.listBundles();
-      const installedNow = bundles
-        .filter((bundle) => bundle.installed)
-        .map((bundle) => bundle.name)
-        .filter((name) => existsSync(join(paths.profileDir, 'node_modules', name)));
-      const stillMissing = planPluginRecovery({ dependencies, installed: installedNow }).missing;
+      const plan = planPluginSync({ dependencies, installed: installedVersions, managed });
       const results = await installMissing({
-        plan: { missing: stillMissing },
+        plan: { missing: plan.install },
         installBundle: (spec: string) => pm.installBundle(spec),
       });
-      await forceReinstallIfMissing(stillMissing.map((item) => item.name));
-      const installed = plan.missing.map((item) => ({
+      // 兜底：installBundle 返回成功但没落盘时，用 pnpm install --force 再装一次
+      const stillMissing = plan.install
+        .filter((item) => !existsSync(join(paths.profileDir, 'node_modules', item.name)))
+        .map((item) => item.name);
+      await forceReinstallIfMissing(stillMissing);
+      const installed = plan.install.map((item) => ({
         name: item.name,
         ok: existsSync(join(paths.profileDir, 'node_modules', item.name)),
         error: results.find((result) => result.name === item.name)?.error,
       }));
-      return { installed, linkDeps: plan.linkDeps.map(({ name, spec }) => ({ name, spec })) };
+      const updated = plan.install.filter((item) => item.reason === 'outdated').map((item) => item.name);
+      const removed: string[] = [];
+      const skipped: string[] = [];
+      for (const name of plan.remove) {
+        if (typeof pm.removeBundle !== 'function') {
+          skipped.push(name);
+          continue;
+        }
+        try {
+          await pm.removeBundle(name);
+          removed.push(name);
+        } catch (error) {
+          log('remove-bundle', error);
+          skipped.push(name);
+        }
+      }
+      // 记录本次同步管理的包，下次同步据此移除「这次有、下次没有」的插件
+      state.managedPlugins = plan.managed;
+      saveState(statePath, state);
+      return {
+        installed,
+        updated,
+        removed,
+        skipped,
+        linkDeps: plan.linkDeps.map(({ name, spec }) => ({ name, spec })),
+        changed: installed.some((item) => item.ok) || removed.length > 0,
+      };
     };
 
     /** 判断 latest 是否比 current 新（只比较 x.y.z 数字段）。 */
@@ -936,15 +980,23 @@ export function apply(ctx: CordisContextLike, config?: Config) {
           const body = (await request.json()) as ApplyBody;
           if (!isPackageId(String(body?.name ?? ''))) return json({ error: 'E_BAD_NAME' }, 400);
           const result = (await sync.applyRemote(String(body.name))) as unknown as Record<string, unknown>;
-          // 同步只恢复声明文件；应用后必须真正把插件装上，否则「清单同步了却没装」
+          // 同步只恢复声明文件；应用后必须真正把插件对齐到远端包（装缺失、更新落后、移除多余）
           const pm = pluginManager;
           const manifest = result.manifest as { dependencies?: Record<string, unknown> } | undefined;
-          const dependencies = manifest?.dependencies ?? null;
+          // 本插件自身不参与对齐：远端包不再声明时也不能把「正在运行的我」移除
+          const dependencies = manifest?.dependencies ? { ...manifest.dependencies } : null;
+          if (dependencies) delete dependencies['@pandablessing/dsh-user-sync'];
+          result.reloadRequired = false;
           if (pm && result.ok && dependencies && Object.keys(dependencies).length > 0) {
             try {
-              const { installed, linkDeps } = await ensurePluginsInstalled(pm, dependencies);
-              result.installed = installed;
-              result.linkDeps = linkDeps;
+              const pluginResult = await syncManagedPlugins(pm, dependencies);
+              result.installed = pluginResult.installed;
+              result.updated = pluginResult.updated;
+              result.removed = pluginResult.removed;
+              result.skipped = pluginResult.skipped;
+              result.linkDeps = pluginResult.linkDeps;
+              // 插件有增删改时，宿主已发布新 release；面板收到后刷新页面即生效
+              result.reloadRequired = pluginResult.changed;
             } catch (error) {
               log('apply-install', error);
               result.installed = [];

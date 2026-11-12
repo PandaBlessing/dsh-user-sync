@@ -1,28 +1,49 @@
 /**
  * 极简 React 渲染器：只支持 client.js 用到的 createElement / useState / useEffect。
  * 目的：在 Node 里挂载真实组件、点击按钮、断言渲染结果，不引入新依赖。
+ *
+ * 每个函数组件有独立的 hook 上下文（按组件函数引用持久化），
+ * 嵌套子组件渲染时不会覆盖父组件的 hook 槽位。
  */
 export function createMiniReact() {
-  let rootInstance = { hooks: [], index: 0 };
+  const instances = new Map();
+  const hookStack = [];
+
+  const current = () => hookStack[hookStack.length - 1];
+
+  // 与真实 React 一致：setState 不在一帧内同步重渲染，而是异步合并调度。
+  // 同步重渲染会在 useEffect 执行栈里递归调用自身（栈溢出），也无法模拟批处理。
+  let schedule = null;
+  let pending = false;
+  const requestRender = () => {
+    if (pending) return;
+    pending = true;
+    queueMicrotask(() => {
+      pending = false;
+      schedule?.();
+    });
+  };
 
   const React = {
     createElement(type, props, ...children) {
       return { type, props: props ?? {}, children };
     },
     useState(initial) {
-      const index = rootInstance.index++;
-      if (!(index in rootInstance.hooks)) {
-        rootInstance.hooks[index] = typeof initial === 'function' ? initial() : initial;
+      const instance = current();
+      const index = instance.index++;
+      if (!(index in instance.hooks)) {
+        instance.hooks[index] = typeof initial === 'function' ? initial() : initial;
       }
       const set = (next) => {
-        rootInstance.hooks[index] = typeof next === 'function' ? next(rootInstance.hooks[index]) : next;
-        schedule?.();
+        instance.hooks[index] = typeof next === 'function' ? next(instance.hooks[index]) : next;
+        requestRender();
       };
-      return [rootInstance.hooks[index], set];
+      return [instance.hooks[index], set];
     },
     useEffect(fn, deps) {
-      const index = rootInstance.index++;
-      const previous = rootInstance.hooks[index];
+      const instance = current();
+      const index = instance.index++;
+      const previous = instance.hooks[index];
       const depsEqual = (a, b) => {
         const left = a ?? [];
         const right = b ?? [];
@@ -32,21 +53,28 @@ export function createMiniReact() {
       if (previous === undefined || !depsEqual(previous?.deps, deps)) {
         previous?.cleanup?.();
         const cleanup = fn();
-        rootInstance.hooks[index] = { deps, cleanup };
+        instance.hooks[index] = { deps, cleanup };
       }
     },
   };
-
-  let schedule = null;
 
   function renderNode(vnode) {
     if (vnode === null || vnode === undefined || typeof vnode === 'boolean') return null;
     if (typeof vnode === 'string' || typeof vnode === 'number') return { text: String(vnode) };
     if (Array.isArray(vnode)) return vnode.map(renderNode).filter(Boolean);
     if (typeof vnode.type === 'function') {
-      rootInstance.index = 0;
-      const out = vnode.type(vnode.props);
-      return renderNode(out);
+      let instance = instances.get(vnode.type);
+      if (!instance) {
+        instance = { hooks: [], index: 0 };
+        instances.set(vnode.type, instance);
+      }
+      instance.index = 0;
+      hookStack.push(instance);
+      try {
+        return renderNode(vnode.type(vnode.props));
+      } finally {
+        hookStack.pop();
+      }
     }
     return {
       type: vnode.type,

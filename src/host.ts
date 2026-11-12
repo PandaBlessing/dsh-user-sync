@@ -21,7 +21,9 @@ export interface PluginManagerBundle {
 
 export interface PluginManagerLike {
   listBundles: () => Promise<PluginManagerBundle[]>;
-  installBundle: (spec: string) => Promise<unknown>;
+  installBundle: (spec: string, options?: Record<string, unknown>) => Promise<unknown>;
+  /** 宿主支持运行时移除插件时才有；没有该方法时跳过移除并标记 skipped。 */
+  removeBundle?: (spec: string) => Promise<unknown>;
 }
 
 export interface ConfigEditorEntry {

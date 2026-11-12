@@ -3,6 +3,24 @@
 本文件记录设计文档与实现的可感知变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；首个实现发布前版本号保持 `0.x`。
 
 
+### 1.0.35（2026-11-12）
+
+**插件**
+
+- 同步应用后静默对齐插件：`planPluginSync` 按 `dependencies` 与 `state.managedPlugins` 计算「缺失安装 / 版本落后升级 / 不再声明卸载」，走 `pluginManager.installBundle` / `removeBundle`，让 Host 发布新 release；`reloadRequired` 时 client 自动 `location.reload()`，无需重启 DSH。
+- 上传/同步进行中显示遮罩（阻止误操作），`OVERLAY_DISMISS_AFTER_SECONDS = 60` 后允许手动关闭；请求超时改为可配（上传/应用 300s、其余 30s）。
+- 打包与应用时净化 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`：只保留 `package.json` 仍声明的包，已卸载插件的残留条目不再随同步回写（新增 `src/pnpm.ts`）。
+- client 请求头新增 `x-dsh-sync-client: 1`（服务端据此只统计客户端下载）。
+
+**服务端 / 后台**
+
+- 账号统计：`AccountStats{uploads, downloads, lastUploadAt, lastDownloadAt}`；上传成功计数、客户端下载计数（`store.recordUpload` / `recordDownload`）。
+- `/v1/admin/usage` 增加 `totalUploads`、`totalDownloads`、`accountStats`；`largest[]` 带最后上传/下载时间。
+- `/v1/admin/packages` 支持 `limit/offset/sort`（默认 50，非法参数回退默认值不报错）；插件统计拆分到 `/v1/admin/plugin-stats`（默认 100，带 `accountKeys`）。
+- 新增 `GET /v1/admin/packages/:account/download`（零依赖 zip 实现 `server/src/lib/zip.ts`）。
+- 新增 `DELETE /v1/admin/packages?account=<key>`：删除该账号全部同步包，保留账号与历史统计。
+- dsh-admin：`sync_account_stats` 表 + 迁移 + 5 分钟同步调度 + 手动「同步统计」；同步包/首页/容量页/插件统计四页展示与分页改造。
+
 ### 1.0.34（2026-11-06）
 
 - 修复：`dsh-skills/` 包内路径在下载时未映射到 `~/.dsh/skills`（之前被写到 `~/.dsh/dsh-skills/`，DSH 不识别）。

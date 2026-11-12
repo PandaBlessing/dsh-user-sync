@@ -1,4 +1,5 @@
 import { parseTarGz, MANIFEST_PATH } from './lib/archive.js';
+import { buildZip } from './lib/zip.js';
 import type { ServerStorage } from './storage/types.js';
 import type { Store } from './store.js';
 
@@ -15,8 +16,26 @@ export interface AdminPackageSummary {
   createdAt: string;
   size: number;
   fileCount: number;
+  uploads: number;
+  downloads: number;
+  lastUploadAt: string | null;
+  lastDownloadAt: string | null;
   modules: Record<string, { files: number; bytes: number }>;
   plugins: Array<{ name: string; version: string }>;
+}
+
+export interface ListOptions {
+  limit?: number;
+  offset?: number;
+  /** 形如 `createdAt_desc` / `size_asc` / `fileCount_desc`。 */
+  sort?: string;
+}
+
+export interface PluginStat {
+  name: string;
+  accounts: number;
+  /** 引用该插件的账号（6 位前缀，供后台弹窗展示）。 */
+  accountKeys: string[];
 }
 
 /** 按包内路径归类到同步模块（与插件端扫描口径一致）。 */
@@ -41,16 +60,40 @@ interface ParsedPackage {
   entries: Map<string, Buffer>;
 }
 
+/**
+ * 包摘要缓存：同一账号的包未变（packageId + size 相同）时复用解析结果，
+ * 避免每次列表请求都把每个包完整解压一遍。只缓存摘要，不缓存文件内容。
+ */
+/** 缓存的是包结构摘要（不含统计），统计每次实时从 store 叠加，避免缓存挡住计数。 */
+type PackageBase = Omit<AdminPackageSummary, 'uploads' | 'downloads' | 'lastUploadAt' | 'lastDownloadAt'>;
+
+const summaryCache = new Map<string, { packageId: string; size: number; summary: PackageBase }>();
+
+function withStats(store: Store, accountKey: string, base: PackageBase): AdminPackageSummary {
+  const stats = store.getAccountStats(accountKey);
+  return {
+    ...base,
+    uploads: stats?.uploads ?? 0,
+    downloads: stats?.downloads ?? 0,
+    lastUploadAt: stats?.lastUploadAt ?? null,
+    lastDownloadAt: stats?.lastDownloadAt ?? null,
+  };
+}
+
+function latestPackageOf(store: Store, accountKey: string): { id: string; size?: number; createdAt?: string } | null {
+  const packages = store.listPackages(accountKey).sort(
+    (a: { createdAt?: string }, b: { createdAt?: string }) =>
+      Date.parse(b.createdAt ?? '') - Date.parse(a.createdAt ?? ''),
+  );
+  return packages[0] ?? null;
+}
+
 async function parseAccountPackage(
   store: Store,
   storage: ServerStorage,
   accountKey: string,
 ): Promise<ParsedPackage | null> {
-  const packages = store.listPackages(accountKey).sort(
-    (a: { createdAt?: string }, b: { createdAt?: string }) =>
-      Date.parse(b.createdAt ?? '') - Date.parse(a.createdAt ?? ''),
-  );
-  const latest = packages[0];
+  const latest = latestPackageOf(store, accountKey);
   if (!latest) return null;
   const buffer = await storage.get(accountKey, latest.id);
   if (!buffer) return null;
@@ -74,6 +117,7 @@ async function parseAccountPackage(
 
   const dependencies = (manifest.dependencies ?? {}) as Record<string, string>;
   const plugins = Object.entries(dependencies).map(([name, version]) => ({ name, version: String(version) }));
+  const stats = store.getAccountStats?.(accountKey) ?? null;
 
   return {
     summary: {
@@ -83,6 +127,10 @@ async function parseAccountPackage(
       createdAt: String(manifest.createdAt ?? latest.createdAt ?? ''),
       size: latest.size ?? buffer.length,
       fileCount: files.length,
+      uploads: stats?.uploads ?? 0,
+      downloads: stats?.downloads ?? 0,
+      lastUploadAt: stats?.lastUploadAt ?? null,
+      lastDownloadAt: stats?.lastDownloadAt ?? null,
       modules,
       plugins,
     },
@@ -91,35 +139,104 @@ async function parseAccountPackage(
   };
 }
 
-/** 全量账号包汇总（供后台列表）。 */
+/** 只取摘要（带缓存）：列表与插件统计用。统计字段每次实时取。 */
+async function summaryOf(store: Store, storage: ServerStorage, accountKey: string): Promise<AdminPackageSummary | null> {
+  const latest = latestPackageOf(store, accountKey);
+  if (!latest) return null;
+  const cached = summaryCache.get(accountKey);
+  if (cached && cached.packageId === latest.id && cached.size === (latest.size ?? 0)) {
+    return withStats(store, accountKey, cached.summary);
+  }
+  const parsed = await parseAccountPackage(store, storage, accountKey);
+  if (!parsed) return null;
+  const { uploads: _u, downloads: _d, lastUploadAt: _lu, lastDownloadAt: _ld, ...base } = parsed.summary;
+  summaryCache.set(accountKey, { packageId: latest.id, size: latest.size ?? 0, summary: base });
+  return parsed.summary;
+}
+
+function sortPackages(packages: AdminPackageSummary[], sort?: string): AdminPackageSummary[] {
+  const [field, order] = (sort ?? 'createdAt_desc').split('_');
+  const dir = order === 'asc' ? 1 : -1;
+  const list = [...packages];
+  list.sort((a, b) => {
+    if (field === 'size') return (a.size - b.size) * dir;
+    if (field === 'fileCount') return (a.fileCount - b.fileCount) * dir;
+    if (field === 'uploads') return (a.uploads - b.uploads) * dir;
+    if (field === 'downloads') return (a.downloads - b.downloads) * dir;
+    return (Date.parse(a.createdAt || '') - Date.parse(b.createdAt || '')) * dir;
+  });
+  return list;
+}
+
+/** 全量账号包汇总（供后台列表；分页在服务端完成）。 */
 export async function listAdminPackages(
   store: Store,
   storage: ServerStorage,
-): Promise<{ ok: true; packages: AdminPackageSummary[]; pluginStats: Array<{ name: string; accounts: number }> }> {
+  options: ListOptions = {},
+): Promise<{ ok: true; packages: AdminPackageSummary[]; total: number }> {
   const packages: AdminPackageSummary[] = [];
-  const pluginAccounts = new Map<string, Set<string>>();
-
   for (const accountKey of store.listAccounts()) {
     try {
-      const parsed = await parseAccountPackage(store, storage, accountKey);
-      if (!parsed) continue;
-      packages.push(parsed.summary);
-      for (const plugin of parsed.summary.plugins) {
-        const set = pluginAccounts.get(plugin.name) ?? new Set<string>();
-        set.add(hintOf(accountKey));
-        pluginAccounts.set(plugin.name, set);
-      }
+      const summary = await summaryOf(store, storage, accountKey);
+      if (summary) packages.push(summary);
     } catch {
       // 单个账号解析失败不影响整体
     }
   }
 
-  packages.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  const pluginStats = [...pluginAccounts.entries()]
-    .map(([name, accounts]) => ({ name, accounts: accounts.size }))
-    .sort((a, b) => b.accounts - a.accounts || a.name.localeCompare(b.name));
+  const sorted = sortPackages(packages, options.sort);
+  const total = sorted.length;
+  // limit=0 表示全量（CSV 导出用）
+  const limit = options.limit === undefined ? 50 : options.limit;
+  const offset = options.offset ?? 0;
+  const items = limit > 0 ? sorted.slice(offset, offset + limit) : sorted.slice(offset);
+  return { ok: true, packages: items, total };
+}
 
-  return { ok: true, packages, pluginStats };
+let pluginStatsCache: { at: number; items: PluginStat[] } | null = null;
+const PLUGIN_STATS_TTL_MS = 60_000;
+
+/** 插件统计排行（账号数 = 引用该插件的不同账号数）。 */
+export async function listPluginStats(
+  store: Store,
+  storage: ServerStorage,
+  options: ListOptions = {},
+): Promise<{ ok: true; items: PluginStat[]; total: number }> {
+  if (!pluginStatsCache || Date.now() - pluginStatsCache.at > PLUGIN_STATS_TTL_MS) {
+    const pluginAccounts = new Map<string, Set<string>>();
+    for (const accountKey of store.listAccounts()) {
+      try {
+        const summary = await summaryOf(store, storage, accountKey);
+        if (!summary) continue;
+        for (const plugin of summary.plugins) {
+          const set = pluginAccounts.get(plugin.name) ?? new Set<string>();
+          set.add(accountKey);
+          pluginAccounts.set(plugin.name, set);
+        }
+      } catch {
+        // 单个账号失败跳过
+      }
+    }
+    const items = [...pluginAccounts.entries()]
+      .map(([name, accounts]) => ({
+        name,
+        accounts: accounts.size,
+        accountKeys: [...accounts].map(hintOf).sort(),
+      }))
+      .sort((a, b) => b.accounts - a.accounts || a.name.localeCompare(b.name));
+    pluginStatsCache = { at: Date.now(), items };
+  }
+
+  const sorted = [...pluginStatsCache.items];
+  const [field, order] = (options.sort ?? 'accounts_desc').split('_');
+  const dir = order === 'asc' ? 1 : -1;
+  sorted.sort((a, b) => (field === 'name' ? a.name.localeCompare(b.name) * dir : (a.accounts - b.accounts) * dir));
+
+  const total = sorted.length;
+  const limit = options.limit === undefined ? 100 : options.limit;
+  const offset = options.offset ?? 0;
+  const items = limit > 0 ? sorted.slice(offset, offset + limit) : sorted.slice(offset);
+  return { ok: true, items, total };
 }
 
 /** 单账号包详情：模块汇总 + 文件清单。 */
@@ -162,4 +279,30 @@ export async function getAdminFile(
   } catch (error) {
     return { ok: false, detail: (error as Error).message };
   }
+}
+
+/** 把账号最新包转成 zip（保留包内原始目录结构）。 */
+export async function buildAccountZip(
+  store: Store,
+  storage: ServerStorage,
+  accountKey: string,
+): Promise<{ ok: true; filename: string; data: Buffer } | { ok: false; detail: string }> {
+  try {
+    const latest = latestPackageOf(store, accountKey);
+    if (!latest) return { ok: false, detail: '暂无同步包' };
+    const buffer = await storage.get(accountKey, latest.id);
+    if (!buffer) return { ok: false, detail: '暂无同步包' };
+    const entries = parseTarGz(buffer).filter((entry) => entry.path !== MANIFEST_PATH);
+    if (entries.length === 0) return { ok: false, detail: '暂无同步包' };
+    const data = buildZip(entries.map((entry) => ({ path: entry.path, data: Buffer.from(entry.data) })));
+    return { ok: true, filename: `dsh-user-sync-${hintOf(accountKey)}-${latest.id.replace(/^dsh-user-sync-/, '').replace(/\.tar\.gz$/, '')}.zip`, data };
+  } catch (error) {
+    return { ok: false, detail: (error as Error).message };
+  }
+}
+
+/** 上传/写入后让对应账号的摘要缓存失效。 */
+export function invalidateAdminCache(accountKey: string): void {
+  summaryCache.delete(accountKey);
+  pluginStatsCache = null;
 }

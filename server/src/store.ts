@@ -3,6 +3,15 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 export interface AccountRecord {
   token: string;
   createdAt: string;
+  /** 上传/下载计数（客户端上传成功、客户端下载成功各计 1；后台下载不计）。 */
+  stats?: AccountStats;
+}
+
+export interface AccountStats {
+  uploads: number;
+  downloads: number;
+  lastUploadAt: string | null;
+  lastDownloadAt: string | null;
 }
 
 export interface PackageMeta {
@@ -49,8 +58,34 @@ export function createStore(dataDir: string) {
       return accounts[accountKey] ?? null;
     },
     createAccount(accountKey: string, token: string): void {
-      accounts[accountKey] = { token, createdAt: new Date().toISOString() };
+      accounts[accountKey] = {
+        token,
+        createdAt: new Date().toISOString(),
+        stats: { uploads: 0, downloads: 0, lastUploadAt: null, lastDownloadAt: null },
+      };
       saveAccounts();
+    },
+    /** 上传成功计 1（空包/配额拒绝等失败分支不调用）。 */
+    recordUpload(accountKey: string): void {
+      const account = accounts[accountKey];
+      if (!account) return;
+      account.stats = account.stats ?? { uploads: 0, downloads: 0, lastUploadAt: null, lastDownloadAt: null };
+      account.stats.uploads += 1;
+      account.stats.lastUploadAt = new Date().toISOString();
+      saveAccounts();
+    },
+    /** 客户端下载计 1；后台（admin）下载不走这里。 */
+    recordDownload(accountKey: string): void {
+      const account = accounts[accountKey];
+      if (!account) return;
+      account.stats = account.stats ?? { uploads: 0, downloads: 0, lastUploadAt: null, lastDownloadAt: null };
+      account.stats.downloads += 1;
+      account.stats.lastDownloadAt = new Date().toISOString();
+      saveAccounts();
+    },
+    /** 读账号的上传/下载统计（后台列表用）。 */
+    getAccountStats(accountKey: string): AccountStats | null {
+      return accounts[accountKey]?.stats ?? null;
     },
     deleteAccount(accountKey: string): void {
       delete accounts[accountKey];
@@ -90,7 +125,19 @@ export function createStore(dataDir: string) {
       accounts: number;
       uploaded: number;
       totalBytes: number;
-      largest: Array<{ accountHint: string; bytes: number; packages: number; updatedAt: string | null; createdAt: string | null }>;
+      totalUploads: number;
+      totalDownloads: number;
+      largest: Array<{
+        accountHint: string;
+        bytes: number;
+        packages: number;
+        updatedAt: string | null;
+        createdAt: string | null;
+        uploads: number;
+        downloads: number;
+        lastUploadAt: string | null;
+        lastDownloadAt: string | null;
+      }>;
     } {
       const keys = Object.keys(accounts);
       const largest = keys.map((accountKey) => {
@@ -101,15 +148,63 @@ export function createStore(dataDir: string) {
           .filter((value): value is string => Boolean(value))
           .sort()
           .pop() ?? null;
-        return { accountHint: accountKey.slice(0, 6), bytes, packages: items.length, updatedAt, createdAt: accounts[accountKey]?.createdAt ?? null };
+        const stats = accounts[accountKey]?.stats;
+        return {
+          accountHint: accountKey.slice(0, 6),
+          bytes,
+          packages: items.length,
+          updatedAt,
+          createdAt: accounts[accountKey]?.createdAt ?? null,
+          uploads: stats?.uploads ?? 0,
+          downloads: stats?.downloads ?? 0,
+          lastUploadAt: stats?.lastUploadAt ?? null,
+          lastDownloadAt: stats?.lastDownloadAt ?? null,
+        };
       });
       largest.sort((a, b) => b.bytes - a.bytes);
       return {
         accounts: keys.length,
         uploaded: largest.filter((item) => item.packages > 0).length,
         totalBytes: largest.reduce((sum, item) => sum + item.bytes, 0),
+        totalUploads: largest.reduce((sum, item) => sum + item.uploads, 0),
+        totalDownloads: largest.reduce((sum, item) => sum + item.downloads, 0),
         largest: largest.slice(0, 20),
       };
+    },
+    /** 全量账号统计（供 dsh-admin 同步进 MySQL；含完整 accountKey，仅 admin 接口使用）。 */
+    listAccountStats(): Array<{
+      accountKey: string;
+      accountHint: string;
+      createdAt: string | null;
+      uploads: number;
+      downloads: number;
+      lastUploadAt: string | null;
+      lastDownloadAt: string | null;
+      bytes: number;
+      packages: number;
+      updatedAt: string | null;
+    }> {
+      return Object.keys(accounts).map((accountKey) => {
+        const items = Object.entries(packages[accountKey] ?? {});
+        const stats = accounts[accountKey]?.stats;
+        const updatedAt = items
+          .map(([, meta]) => meta.createdAt ?? null)
+          .filter((value): value is string => Boolean(value))
+          .sort()
+          .pop() ?? null;
+        return {
+          accountKey,
+          accountHint: accountKey.slice(0, 6),
+          createdAt: accounts[accountKey]?.createdAt ?? null,
+          uploads: stats?.uploads ?? 0,
+          downloads: stats?.downloads ?? 0,
+          lastUploadAt: stats?.lastUploadAt ?? null,
+          lastDownloadAt: stats?.lastDownloadAt ?? null,
+          bytes: items.reduce((sum, [, meta]) => sum + (meta.size ?? 0), 0),
+          packages: items.length,
+          updatedAt,
+        };
+      });
     },
     totalBytes(accountKey: string): number {
       return Object.values(packages[accountKey] ?? {}).reduce((sum, meta) => sum + (meta.size ?? 0), 0);

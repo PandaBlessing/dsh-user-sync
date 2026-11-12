@@ -203,9 +203,11 @@ if (typeof window !== "undefined") {
 					}
 				};
 				async function fetchJson(url, options = {}) {
+					const { timeoutMs = 3e4, ...init } = options;
 					const response = await fetch(url, {
 						cache: "no-store",
-						...options
+						...init,
+						signal: AbortSignal.timeout(timeoutMs)
 					});
 					const text = await response.text();
 					try {
@@ -372,6 +374,19 @@ if (typeof window !== "undefined") {
 						}
 					};
 					const [busyAction, setBusyAction] = R.useState(null);
+					const OVERLAY_DISMISS_AFTER_SECONDS = 60;
+					const [overlayElapsed, setOverlayElapsed] = R.useState(0);
+					const [overlayDismissed, setOverlayDismissed] = R.useState(false);
+					R.useEffect(() => {
+						if (!busyAction) return void 0;
+						const started = Date.now();
+						const timer = setInterval(() => setOverlayElapsed(Math.floor((Date.now() - started) / 1e3)), 1e3);
+						return () => clearInterval(timer);
+					}, [busyAction]);
+					const beginOverlay = () => {
+						setOverlayElapsed(0);
+						setOverlayDismissed(false);
+					};
 					const [resultDialog, setResultDialog] = R.useState(null);
 					const updatePlugin = async () => {
 						const target = updateInfo?.latest;
@@ -587,6 +602,7 @@ if (typeof window !== "undefined") {
 					};
 					/** force=true 表示用户已确认「用本机覆盖远端」（远端更新时才需要）。 */
 					const upload = async (force = false) => {
+						beginOverlay();
 						setBusy(true);
 						setBusyAction("upload");
 						setNotice(null);
@@ -594,7 +610,8 @@ if (typeof window !== "undefined") {
 							const result = await fetchJson(`${API}/upload`, {
 								method: "POST",
 								headers: { "content-type": "application/json" },
-								body: JSON.stringify({ force })
+								body: JSON.stringify({ force }),
+								timeoutMs: 3e5
 							});
 							if (result.ok) {
 								setResultDialog({
@@ -631,6 +648,7 @@ if (typeof window !== "undefined") {
 						}
 					};
 					const checkRemote = async () => {
+						beginOverlay();
 						setBusy(true);
 						setBusyAction("pull");
 						setNotice(null);
@@ -674,15 +692,27 @@ if (typeof window !== "undefined") {
 					};
 					const applyRemote = async (name) => {
 						if (!name) return;
+						beginOverlay();
 						setBusy(true);
 						setBusyAction("pull");
 						try {
 							const result = await fetchJson(`${API}/apply`, {
 								method: "POST",
 								headers: { "content-type": "application/json" },
-								body: JSON.stringify({ name })
+								body: JSON.stringify({ name }),
+								timeoutMs: 3e5
 							});
-							setResultDialog({
+							if (result.ok && result.reloadRequired) {
+								setResultDialog({
+									title: "同步完成",
+									detail: "插件已按远端更新，正在刷新…"
+								});
+								globalThis.setTimeout(() => {
+									try {
+										globalThis.location.reload();
+									} catch {}
+								}, 900);
+							} else setResultDialog({
 								title: result.ok ? "同步完成" : "同步失败",
 								error: !result.ok,
 								detail: result.detail ?? (result.ok ? "已从远端同步到本机" : "同步失败")
@@ -933,7 +963,13 @@ if (typeof window !== "undefined") {
 					}, R.createElement("strong", null, feedbackResult.ok ? "提交成功" : "提交失败"), R.createElement("p", { style: styles.muted }, feedbackResult.message), R.createElement("div", { style: styles.actions }, R.createElement("button", {
 						style: styles.primary,
 						onClick: () => setFeedbackResult(null)
-					}, "知道了")))) : null);
+					}, "知道了")))) : null, busyAction && !overlayDismissed ? R.createElement("div", { style: styles.overlay }, R.createElement("div", { style: styles.dialog }, R.createElement("strong", null, busyAction === "upload" ? "正在上传用户配置…" : "正在从远端同步…"), R.createElement("p", { style: styles.muted }, overlayElapsed < OVERLAY_DISMISS_AFTER_SECONDS ? `已用 ${overlayElapsed}s，完成前请勿关闭页面。` : `已超过 ${OVERLAY_DISMISS_AFTER_SECONDS}s，操作仍在后台执行；可关闭弹窗先做别的。`), R.createElement("div", { style: styles.actions }, overlayElapsed < OVERLAY_DISMISS_AFTER_SECONDS ? R.createElement("button", {
+						style: styles.secondary,
+						disabled: true
+					}, `请稍候（${overlayElapsed}s）`) : R.createElement("button", {
+						style: styles.primary,
+						onClick: () => setOverlayDismissed(true)
+					}, "关闭弹窗")))) : null);
 				}
 				function UserSyncStatusSection() {
 					const [status, setStatus] = R.useState(null);

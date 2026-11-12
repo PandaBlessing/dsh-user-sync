@@ -12,6 +12,7 @@ import { decide } from './lww.ts';
 import type { Decision } from './lww.ts';
 import { scanAssets, DEFAULT_MODULES } from './scan.ts';
 import type { ScanResult } from './scan.ts';
+import { sanitizePnpmWorkspace } from './pnpm.ts';
 import { scanBuffer } from './secret.ts';
 import type { SecretHit } from './secret.ts';
 import { acquireLock, appendHistory, loadState, releaseLock, saveState } from './state.ts';
@@ -184,21 +185,7 @@ export function createSync({
     const { entries, errors } = scanAssets({ dshHome, userHome, profileName, modules: modulesNow(), excludeGlobs });
     if (errors.length > 0) return { ok: false, code: errors[0].code ?? 'E_SCAN', errors };
 
-    const hits: SecretHit[] = [];
-    const files: ManifestFile[] = [];
-    for (const entry of entries) {
-      if (entry.mode === '120000') {
-        files.push({ path: entry.path, sha256: hashBytes(Buffer.from(entry.linkTarget ?? '', 'utf8')), size: 0, mode: '120000' });
-        continue;
-      }
-      const data = readFileSync(entry.absPath);
-      const scan = scanBuffer(data, entry.path);
-      hits.push(...scan.hits);
-      files.push({ path: entry.path, sha256: hashBytes(data), size: data.length, mode: entry.mode });
-    }
-    if (hits.length > 0) return { ok: false, code: 'E_SENSITIVE', hits };
-
-    // 把 profile 的依赖声明写进 manifest：目标机应用后据此自动安装缺失插件
+    // 依赖声明：打包前先读，pnpm-workspace.yaml 的净化要用它；也写进 manifest（目标机据此自动安装缺失插件）
     let dependencies: Record<string, string> = {};
     try {
       const pkg = JSON.parse(
@@ -208,6 +195,29 @@ export function createSync({
     } catch {
       dependencies = {};
     }
+
+    const hits: SecretHit[] = [];
+    const files: ManifestFile[] = [];
+    const sanitized = new Map<string, Buffer>();
+    for (const entry of entries) {
+      if (entry.mode === '120000') {
+        files.push({ path: entry.path, sha256: hashBytes(Buffer.from(entry.linkTarget ?? '', 'utf8')), size: 0, mode: '120000' });
+        continue;
+      }
+      let data = readFileSync(entry.absPath);
+      if (entry.path.endsWith('/pnpm-workspace.yaml')) {
+        const raw = data.toString('utf8');
+        const clean = sanitizePnpmWorkspace(raw, dependencies);
+        if (clean !== raw) {
+          data = Buffer.from(clean, 'utf8');
+          sanitized.set(entry.path, data);
+        }
+      }
+      const scan = scanBuffer(data, entry.path);
+      hits.push(...scan.hits);
+      files.push({ path: entry.path, sha256: hashBytes(data), size: data.length, mode: entry.mode });
+    }
+    if (hits.length > 0) return { ok: false, code: 'E_SENSITIVE', hits };
 
     const packageId = makePackageId({ deviceId: currentDeviceId() });
     const manifest = buildManifest(files, {
@@ -228,7 +238,7 @@ export function createSync({
       if (entry.mode === '120000') {
         tarEntries.push({ path: entry.path, mode: '120000', type: 'symlink', linkTarget: entry.linkTarget });
       } else {
-        tarEntries.push({ path: entry.path, data: readFileSync(entry.absPath), mode: entry.mode });
+        tarEntries.push({ path: entry.path, data: sanitized.get(entry.path) ?? readFileSync(entry.absPath), mode: entry.mode });
       }
     }
     return { ok: true, buffer: buildTarGz(tarEntries), manifest };
@@ -395,6 +405,25 @@ export function createSync({
         if (scan.hits.length > 0) return { ok: false, code: 'E_SENSITIVE', hits: scan.hits };
       }
 
+      // 应用前净化 pnpm-workspace.yaml：旧包可能带着已卸载插件的安装白名单条目
+      const pkgEntry = entries.find((entry) => entry.type === 'file' && /^profiles\/[^/]+\/package\.json$/.test(entry.path));
+      let pkgDependencies: Record<string, string> = {};
+      if (pkgEntry) {
+        try {
+          pkgDependencies = (
+            JSON.parse(pkgEntry.data.toString('utf8')) as { dependencies?: Record<string, string> }
+          ).dependencies ?? {};
+        } catch {
+          pkgDependencies = {};
+        }
+      }
+      for (const entry of entries) {
+        if (entry.type !== 'file' || !entry.path.endsWith('/pnpm-workspace.yaml')) continue;
+        const raw = entry.data.toString('utf8');
+        const clean = sanitizePnpmWorkspace(raw, pkgDependencies);
+        if (clean !== raw) entry.data = Buffer.from(clean, 'utf8');
+      }
+
       const { map: localFiles } = currentFiles();
       const plan = planApply({ manifestFiles: manifest.files, localFiles });
       const applied = applyEntries({ entries, resolveTarget, preRestoreRoot: nextPreRestoreRoot() });
@@ -414,7 +443,15 @@ export function createSync({
       state.lastApplied = { packageId: manifest.packageId, createdAt: manifest.createdAt };
       state.deviceId = state.deviceId ?? currentDeviceId();
       state.files = Object.fromEntries(
-        manifest.files.map((file) => [file.path, { sha256: file.sha256, size: file.size, appliedAt: new Date().toISOString() }]),
+        manifest.files.map((file) => {
+          const entry = entries.find((item) => item.path === file.path && item.type === 'file');
+          return [
+            file.path,
+            entry
+              ? { sha256: hashBytes(entry.data), size: entry.data.length, appliedAt: new Date().toISOString() }
+              : { sha256: file.sha256, size: file.size, appliedAt: new Date().toISOString() },
+          ];
+        }),
       );
       saveState(paths.state, state);
       appendHistory(paths.history, {
