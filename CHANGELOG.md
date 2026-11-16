@@ -3,6 +3,15 @@
 本文件记录设计文档与实现的可感知变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；首个实现发布前版本号保持 `0.x`。
 
 
+### 1.0.36（2026-11-16）
+
+**插件**
+
+- `syncManagedPlugins` 改为按版本校验安装结果：`versionOk(name, spec)` 读 `node_modules/<pkg>/package.json` 的 `version`，用 `versionBase` + `isVersionNewer` 判断是否达到 spec；旧版目录存在不再算成功（根因：原先只用 `existsSync` 判断）。
+- 未达标时兜底 `installProfileDependencies()`（`pnpm install --force`），返回 `failed: [{name, ok, version, error}]`，client 弹「同步完成，部分插件未更新」并列出原因。
+- apply 结果新增 `selfUpdate`（远端声明版本 > `PLUGIN_VERSION`）与 `pluginManagerAvailable`；`selfUpdate` 时 client 只提示、不自动重启。
+- 新增 `scheduleDshRestart(delaySeconds)` 与 `POST /api/dsh-user-sync/restart`：PowerShell 一次性脚本，延迟 → `Stop-Process` → 轮询等进程表清空（≤20s）→ 等 2s → `Start-Process` → 轮询确认启动 → 写 `%TEMP%\dsh-user-sync-restart.log` → 自删；修复上次「只关不开」（Electron 单实例锁）。
+
 ### 1.0.35（2026-11-12）
 
 **插件**

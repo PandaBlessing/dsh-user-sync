@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,7 +21,7 @@ import type {
 } from './host.ts';
 import { resolvePaths } from './paths.ts';
 import { installMissing, planPluginRecovery } from './plugins.ts';
-import { planPluginSync } from './plugins-sync.ts';
+import { isVersionNewer, planPluginSync, versionBase } from './plugins-sync.ts';
 import { ALL_MODULES, scanAssets } from './scan.ts';
 import { createScheduler } from './scheduler.ts';
 import { loadState, saveState } from './state.ts';
@@ -173,6 +173,47 @@ export function logPluginError(
 
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+
+/**
+ * 安排一次 DSH 重启：写一个一次性 PowerShell 脚本，延迟后结束所有 DSH 进程、等旧进程完全退出、
+ * 再启动新实例并校验确实起来了；脚本执行完自行删除。桌面 DSH 没有重启 API，只能走这条路径。
+ *
+ * 注意：Electron 有单实例锁，旧进程没退干净就启动新实例时，新实例会把事件转给旧进程后自己退出，
+ * 表现就是「窗口关了但没重开」——所以必须等进程表里彻底没有 DSH 再 Start-Process。
+ */
+export function scheduleDshRestart(delaySeconds = 3): { ok: boolean; script?: string; error?: string } {
+  try {
+    const exe = process.execPath;
+    if (!/DeepSeek Harness\.exe$/i.test(exe)) return { ok: false, error: `unexpected execPath: ${exe}` };
+    const script = join(tmpdir(), `dsh-user-sync-restart-${Date.now()}.ps1`);
+    const logPath = join(tmpdir(), 'dsh-user-sync-restart.log');
+    const lines = [
+      `$exe = '${exe.replace(/'/g, "''")}'`,
+      `$log = '${logPath.replace(/'/g, "''")}'`,
+      `Start-Sleep -Seconds ${Math.max(1, Math.floor(delaySeconds))}`,
+      '"$(Get-Date -Format o) stopping DSH" | Out-File -FilePath $log -Append -Encoding utf8',
+      'Get-Process -Name "DeepSeek Harness" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue',
+      '# 等旧进程彻底退出（单实例锁释放）',
+      '$deadline = (Get-Date).AddSeconds(20)',
+      'while ((Get-Process -Name "DeepSeek Harness" -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }',
+      'Start-Sleep -Seconds 2',
+      'Start-Process -FilePath $exe',
+      '$started = $false',
+      'for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Milliseconds 500; if (Get-Process -Name "DeepSeek Harness" -ErrorAction SilentlyContinue) { $started = $true; break } }',
+      '"$(Get-Date -Format o) started=$started" | Out-File -FilePath $log -Append -Encoding utf8',
+      'Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue',
+    ];
+    writeFileSync(script, lines.join('\r\n'), 'utf8');
+    spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', script], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }).unref();
+    return { ok: true, script };
+  } catch (error) {
+    return { ok: false, error: (error as Error)?.message ?? String(error) };
+  }
+}
 
 export function apply(ctx: CordisContextLike, config?: Config) {
   let logBase: string = process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -456,7 +497,8 @@ export function apply(ctx: CordisContextLike, config?: Config) {
       pm: PluginManagerLike,
       dependencies: Record<string, unknown>,
     ): Promise<{
-      installed: Array<{ name: string; ok: boolean; error?: string }>;
+      installed: Array<{ name: string; ok: boolean; version?: string; error?: string }>;
+      failed: Array<{ name: string; ok: boolean; version?: string; error?: string }>;
       updated: string[];
       removed: string[];
       skipped: string[];
@@ -475,16 +517,34 @@ export function apply(ctx: CordisContextLike, config?: Config) {
         plan: { missing: plan.install },
         installBundle: (spec: string) => pm.installBundle(spec),
       });
-      // 兜底：installBundle 返回成功但没落盘时，用 pnpm install --force 再装一次
-      const stillMissing = plan.install
-        .filter((item) => !existsSync(join(paths.profileDir, 'node_modules', item.name)))
-        .map((item) => item.name);
-      await forceReinstallIfMissing(stillMissing);
-      const installed = plan.install.map((item) => ({
-        name: item.name,
-        ok: existsSync(join(paths.profileDir, 'node_modules', item.name)),
-        error: results.find((result) => result.name === item.name)?.error,
-      }));
+      // 装完必须回读版本：目录存在不代表版本已更新（旧版目录可能还在，pnpm 也可能拒绝覆盖）
+      const versionOk = (name: string, spec: string): boolean => {
+        const current = readInstalledVersion(name);
+        const base = versionBase(spec);
+        if (!current) return false;
+        if (!base) return true;
+        return !isVersionNewer(base, current);
+      };
+      const unmet = plan.install.filter((item) => !versionOk(item.name, item.spec));
+      // 兜底：宿主 installBundle 未生效时，按 profile 的 package.json 再跑一次 pnpm install --force
+      if (unmet.length > 0) {
+        try {
+          await installProfileDependencies();
+        } catch (error) {
+          log('pnpm-force', error);
+        }
+      }
+      const installed = plan.install.map((item) => {
+        const current = readInstalledVersion(item.name);
+        const ok = versionOk(item.name, item.spec);
+        return {
+          name: item.name,
+          ok,
+          version: current ?? undefined,
+          error: ok ? undefined : results.find((result) => result.name === item.name)?.error ?? '安装后版本未更新',
+        };
+      });
+      const failed = installed.filter((item) => !item.ok);
       const updated = plan.install.filter((item) => item.reason === 'outdated').map((item) => item.name);
       const removed: string[] = [];
       const skipped: string[] = [];
@@ -506,6 +566,7 @@ export function apply(ctx: CordisContextLike, config?: Config) {
       saveState(statePath, state);
       return {
         installed,
+        failed,
         updated,
         removed,
         skipped,
@@ -985,12 +1046,18 @@ export function apply(ctx: CordisContextLike, config?: Config) {
           const manifest = result.manifest as { dependencies?: Record<string, unknown> } | undefined;
           // 本插件自身不参与对齐：远端包不再声明时也不能把「正在运行的我」移除
           const dependencies = manifest?.dependencies ? { ...manifest.dependencies } : null;
+          const selfSpec = dependencies?.['@pandablessing/dsh-user-sync'];
+          const selfBase = typeof selfSpec === 'string' ? versionBase(selfSpec) : null;
+          // 远端声明了比我更新的版本 → 本插件自身需要更新，装完后要重启 DSH 才能加载新代码
+          result.selfUpdate = Boolean(selfBase && isVersionNewer(selfBase, PLUGIN_VERSION));
           if (dependencies) delete dependencies['@pandablessing/dsh-user-sync'];
           result.reloadRequired = false;
+          result.pluginManagerAvailable = Boolean(pm);
           if (pm && result.ok && dependencies && Object.keys(dependencies).length > 0) {
             try {
               const pluginResult = await syncManagedPlugins(pm, dependencies);
               result.installed = pluginResult.installed;
+              result.failed = pluginResult.failed;
               result.updated = pluginResult.updated;
               result.removed = pluginResult.removed;
               result.skipped = pluginResult.skipped;
@@ -1000,12 +1067,25 @@ export function apply(ctx: CordisContextLike, config?: Config) {
             } catch (error) {
               log('apply-install', error);
               result.installed = [];
+              result.failed = [];
               result.installError = (error as Error)?.message ?? String(error);
             }
           }
           // 应用成功后远端与本机一致：重算检查结论
           if (result.ok) void scheduler.runOnce();
           return json(result);
+        },
+      },
+      {
+        path: '/api/dsh-user-sync/restart',
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request: Request) => {
+          const body = (await request.json().catch(() => ({}))) as { delaySeconds?: number };
+          const delay = typeof body?.delaySeconds === 'number' ? body.delaySeconds : 3;
+          const result = scheduleDshRestart(delay);
+          if (!result.ok) log('restart', new Error(result.error ?? 'unknown'));
+          return json(result, result.ok ? 200 : 500);
         },
       },
     ];

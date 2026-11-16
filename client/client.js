@@ -702,17 +702,27 @@ if (typeof window !== "undefined") {
 								body: JSON.stringify({ name }),
 								timeoutMs: 3e5
 							});
-							if (result.ok && result.reloadRequired) {
+							const failed = Array.isArray(result.failed) ? result.failed.filter((item) => !item.ok) : [];
+							const failedText = failed.length > 0 ? `\n未更新：${failed.map((item) => `${item.name}（${item.error ?? "版本未更新"}）`).join("、")}` : "";
+							if (result.ok && result.selfUpdate && failed.length === 0) setResultDialog({
+								title: "本插件已更新",
+								detail: "新版本将在下次重启 DSH 后生效；本次同步不会自动重启。"
+							});
+							else if (result.ok && result.reloadRequired) {
 								setResultDialog({
 									title: "同步完成",
-									detail: "插件已按远端更新，正在刷新…"
+									detail: `插件已按远端更新，正在刷新…${failedText}`
 								});
 								globalThis.setTimeout(() => {
 									try {
 										globalThis.location.reload();
 									} catch {}
 								}, 900);
-							} else setResultDialog({
+							} else if (result.ok && failed.length > 0) setResultDialog({
+								title: "同步完成，部分插件未更新",
+								detail: `配置文件已同步。${failedText}`
+							});
+							else setResultDialog({
 								title: result.ok ? "同步完成" : "同步失败",
 								error: !result.ok,
 								detail: result.detail ?? (result.ok ? "已从远端同步到本机" : "同步失败")
